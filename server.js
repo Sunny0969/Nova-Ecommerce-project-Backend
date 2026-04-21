@@ -1,0 +1,222 @@
+require('dotenv').config();
+const {
+  configureMongoDns,
+  MONGOOSE_CONNECT_OPTS
+} = require('./lib/configureMongoDns');
+configureMongoDns();
+
+const path = require('path');
+const express = require('express');
+const mongoose = require('mongoose');
+const session = require('express-session');
+const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const compression = require('compression');
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+const MONGODB_URI = process.env.MONGODB_URI;
+if (!MONGODB_URI) {
+  console.error(
+    '[env] MONGODB_URI is required. Set it in backend/.env (e.g. your Atlas connection string).'
+  );
+  process.exit(1);
+}
+
+app.set('trust proxy', 1);
+
+app.use(compression());
+
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' }
+  })
+);
+
+const frontendOrigin = process.env.FRONTEND_URL || 'http://localhost:3000';
+const corsOrigin =
+  process.env.NODE_ENV === 'production'
+    ? frontendOrigin
+    : [frontendOrigin, /^http:\/\/localhost:\d+$/, /^http:\/\/127\.0\.0\.1:\d+$/];
+app.use(
+  cors({
+    credentials: true,
+    origin: corsOrigin
+  })
+);
+
+const stripeModule = require('./routes/stripe');
+app.post(
+  '/api/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  stripeModule.webhookHandler
+);
+
+app.use(
+  morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev')
+);
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+app.use(
+  session({
+    secret:
+      process.env.JWT_SECRET || 'nova-shop-secret-key-change-in-production',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === 'production',
+      httpOnly: true,
+      maxAge: 30 * 24 * 60 * 60 * 1000
+    }
+  })
+);
+
+mongoose.connection.on('error', (err) => {
+  console.error('[MongoDB] Connection error:', err.message);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.warn('[MongoDB] Mongoose disconnected.');
+});
+
+const { requireJwtAuth } = require('./middleware/jwtAuth');
+const { requireAdmin } = require('./middleware/isAdmin');
+
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/store-settings', require('./routes/storeSettings'));
+app.use('/api/categories', require('./routes/categories'));
+app.use('/api/products', require('./routes/products'));
+app.use('/api/events', require('./routes/events'));
+app.use('/api/recommendations', require('./routes/recommendations'));
+app.use('/api/chatbot', require('./routes/chatbot.impl'));
+app.use('/api/cart', requireJwtAuth, require('./routes/cart'));
+app.use('/api/wishlist', requireJwtAuth, require('./routes/wishlist'));
+app.use('/api/orders', requireJwtAuth, require('./routes/orders'));
+app.use('/api/stripe', requireJwtAuth, stripeModule.router);
+app.use(
+  '/api/admin/orders',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/orders')
+);
+app.use(
+  '/api/admin/dashboard',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/dashboard')
+);
+app.use(
+  '/api/admin/products',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/products')
+);
+app.use(
+  '/api/admin/customers',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/customers')
+);
+app.use(
+  '/api/admin/coupons',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/coupons')
+);
+app.use(
+  '/api/admin/categories',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/categories')
+);
+app.use(
+  '/api/admin/store-settings',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/storeSettings')
+);
+app.use(
+  '/api/admin/fraud',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/fraud')
+);
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', message: 'Nova Shop API is running' });
+});
+
+app.get('/sitemap.xml', require('./routes/sitemap'));
+app.get('/robots.txt', require('./routes/robots'));
+
+app.use(require('./middleware/normalizeSpaUrl'));
+
+app.use(express.static(path.join(__dirname, '..')));
+
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route ${req.method} ${req.originalUrl} not found`
+  });
+});
+
+app.use((err, req, res, next) => {
+  if (res.headersSent) {
+    return next(err);
+  }
+  console.error(err.stack);
+  const status = err.status || err.statusCode || 500;
+  const isDev = process.env.NODE_ENV === 'development';
+  const safeMessage =
+    status === 500 && !isDev ? 'Something went wrong!' : err.message;
+  res.status(status).json({
+    success: false,
+    error: safeMessage || 'Something went wrong!',
+    ...(isDev && err.stack ? { stack: err.stack } : {})
+  });
+});
+
+async function startServer() {
+  try {
+    console.log('[MongoDB] Attempting to connect...');
+    await mongoose.connect(MONGODB_URI, MONGOOSE_CONNECT_OPTS);
+    console.log('[MongoDB] Connection succeeded.');
+    console.log(
+      `[MongoDB] Database: ${mongoose.connection.name}, host: ${mongoose.connection.host}`
+    );
+
+    const { ensureSampleProductsIfDbEmpty } = require('./lib/sampleProductsSeed');
+    const seedResult = await ensureSampleProductsIfDbEmpty();
+    if (seedResult.seeded) {
+      console.log(
+        `[Seed] Catalog was empty — inserted ${seedResult.added} sample products (total: ${seedResult.total}). Refresh the shop page.`
+      );
+    }
+
+    const { ensureBootstrapAdmin } = require('./lib/ensureBootstrapAdmin');
+    await ensureBootstrapAdmin();
+
+    app.listen(PORT, () => {
+      console.log(`[Server] Listening on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('[MongoDB] Connection failed:', err.message);
+    if (err.cause) {
+      console.error('[MongoDB] Cause:', err.cause.message || err.cause);
+    }
+    const msg = String(err.message || '');
+    if (/queryTxt|querySrv|EREFUSED|ENOTFOUND/i.test(msg)) {
+      console.error(
+        '[MongoDB] DNS tip: set MONGODB_DNS_SERVERS=8.8.8.8,8.8.4.4 in backend/.env, or change Windows adapter DNS. ' +
+          'If it still fails, use Atlas “Connect” → standard mongodb://… string (3 hosts) instead of mongodb+srv.'
+      );
+    }
+    process.exit(1);
+  }
+}
+
+startServer();
