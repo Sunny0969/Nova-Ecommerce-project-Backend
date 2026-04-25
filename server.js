@@ -35,15 +35,56 @@ app.use(
   })
 );
 
-const frontendOrigin = process.env.FRONTEND_URL || 'http://localhost:3000';
-const corsOrigin =
-  process.env.NODE_ENV === 'production'
-    ? frontendOrigin
-    : [frontendOrigin, /^http:\/\/localhost:\d+$/, /^http:\/\/127\.0\.0\.1:\d+$/];
+const devLocal = [
+  /^https?:\/\/localhost(?::\d+)?$/i,
+  /^https?:\/\/127\.0\.0\.1(?::\d+)?$/i
+];
+
+/** Production: allow live site(s) + optional extra origins from FRONTEND_URL (comma-separated). */
+function corsOriginForRequest() {
+  if (process.env.NODE_ENV !== 'production') {
+    const one = process.env.FRONTEND_URL || 'http://localhost:3000';
+    return [one, ...devLocal];
+  }
+  const fromEnv = (process.env.FRONTEND_URL || '')
+    .split(',')
+    .map((s) => s.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+  const defaults = [
+    'https://ebadahgroup.com',
+    'https://www.ebadahgroup.com'
+  ];
+  return [...new Set([...defaults, ...fromEnv])];
+}
+
+const corsOrigins = corsOriginForRequest();
+
 app.use(
   cors({
     credentials: true,
-    origin: corsOrigin
+    origin:
+      process.env.NODE_ENV === 'production'
+        ? (origin, callback) => {
+            if (!origin) {
+              return callback(null, true);
+            }
+            const norm = origin.replace(/\/$/, '');
+            const allowed = corsOrigins.some((o) => o.replace(/\/$/, '') === norm);
+            if (allowed) {
+              return callback(null, true);
+            }
+            // Hostinger temporary / preview domains (*.hostingersite.com)
+            try {
+              const h = new URL(origin).hostname;
+              if (h === 'hostingersite.com' || h.endsWith('.hostingersite.com')) {
+                return callback(null, true);
+              }
+            } catch {
+              /* ignore */
+            }
+            return callback(null, false);
+          }
+        : corsOrigins
   })
 );
 
@@ -85,6 +126,7 @@ mongoose.connection.on('disconnected', () => {
 
 const { requireJwtAuth } = require('./middleware/jwtAuth');
 const { requireAdmin } = require('./middleware/isAdmin');
+const { adminOrStaffPermission } = require('./middleware/staffAuth');
 
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/store-settings', require('./routes/storeSettings'));
@@ -93,20 +135,19 @@ app.use('/api/products', require('./routes/products'));
 app.use('/api/events', require('./routes/events'));
 app.use('/api/recommendations', require('./routes/recommendations'));
 app.use('/api/chatbot', require('./routes/chatbot.impl'));
+app.use('/api/staff', require('./routes/staff'));
 app.use('/api/cart', requireJwtAuth, require('./routes/cart'));
 app.use('/api/wishlist', requireJwtAuth, require('./routes/wishlist'));
 app.use('/api/orders', requireJwtAuth, require('./routes/orders'));
 app.use('/api/stripe', requireJwtAuth, stripeModule.router);
 app.use(
   '/api/admin/orders',
-  requireJwtAuth,
-  requireAdmin,
+  ...adminOrStaffPermission('manageOrders'),
   require('./routes/admin/orders')
 );
 app.use(
   '/api/admin/dashboard',
-  requireJwtAuth,
-  requireAdmin,
+  ...adminOrStaffPermission('viewAnalytics'),
   require('./routes/admin/dashboard')
 );
 app.use(
@@ -117,14 +158,12 @@ app.use(
 );
 app.use(
   '/api/admin/customers',
-  requireJwtAuth,
-  requireAdmin,
+  ...adminOrStaffPermission('manageCustomers'),
   require('./routes/admin/customers')
 );
 app.use(
   '/api/admin/coupons',
-  requireJwtAuth,
-  requireAdmin,
+  ...adminOrStaffPermission('manageCoupons'),
   require('./routes/admin/coupons')
 );
 app.use(
@@ -144,6 +183,12 @@ app.use(
   requireJwtAuth,
   requireAdmin,
   require('./routes/admin/fraud')
+);
+app.use(
+  '/api/admin/staff',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/staffAccess')
 );
 
 app.get('/api/health', (req, res) => {

@@ -1,21 +1,15 @@
-const crypto = require('crypto');
 const mongoose = require('mongoose');
 const slugify = require('slugify');
 
-function randomAlphaSuffix(len = 4) {
-  const a = 'abcdefghijklmnopqrstuvwxyz';
-  let s = '';
-  for (let i = 0; i < len; i += 1) s += a[crypto.randomInt(0, 26)];
-  return s;
-}
-
-/** Same rules as admin `PUT` slug + `seoSlugFromTitle` (letters/hyphens, no digits). */
-function normalizeSlugBase(raw) {
+/**
+ * Public URL path segment: derived only from the product `name` (title).
+ * Keeps a–z, 0–9, and hyphens (e.g. "20W" stays in the slug).
+ */
+function normalizeTitleSlugFromName(raw) {
   const s = String(raw || '').trim().toLowerCase();
   if (!s) return '';
   return s
     .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/[0-9]+/g, '')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
 }
@@ -172,6 +166,32 @@ const productSchema = new mongoose.Schema(
       default: false,
       index: true
     },
+    approvalStatus: {
+      type: String,
+      enum: ['pending_approval', 'approved', 'rejected'],
+      default: 'approved',
+      index: true
+    },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true
+    },
+    approvedAt: {
+      type: Date,
+      default: null
+    },
+    rejectionReason: {
+      type: String,
+      default: ''
+    },
+    submittedByStaff: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'StaffAccess',
+      default: null,
+      index: true
+    },
     ratings: {
       type: Number,
       default: 0,
@@ -198,43 +218,32 @@ productSchema.virtual('discountPercentage').get(function () {
 
 productSchema.pre('save', async function (next) {
   try {
-    if (this.isModified('name') && !this.isNew) {
-      this.slug = undefined;
-    }
-
-    /*
-     * Always resolve a unique slug. If the client sends `slug` (admin form), we used to
-     * `return next()` and skip the collision loop — duplicate slugs then hit Mongo 11000.
-     */
-    let base = '';
-    const explicit = this.slug && String(this.slug).trim();
-    if (explicit) {
-      base = normalizeSlugBase(this.slug);
-    } else {
-      base = slugify(String(this.name), { lower: true, strict: true });
-      base = normalizeSlugBase(base);
-    }
+    let base = normalizeTitleSlugFromName(
+      slugify(String(this.name || 'Product'), { lower: true, strict: true, trim: true })
+    );
     if (!base) base = 'product';
 
-    let candidate = base;
     const Model = this.constructor;
-    for (let tries = 0; tries < 40; tries += 1) {
+    for (let n = 0; n < 200; n += 1) {
+      const candidate = n === 0 ? base : `${base}-${n + 1}`;
       const q = { slug: candidate };
       if (this._id) q._id = { $ne: this._id };
-      const exists = await Model.findOne(q).select('_id').lean();
-      if (!exists) break;
-      candidate = `${base}-${randomAlphaSuffix(4)}`;
+      const taken = await Model.findOne(q).select('_id').lean();
+      if (!taken) {
+        this.slug = candidate;
+        return next();
+      }
     }
-    this.slug = candidate;
-    next();
+    return next(new Error('Could not allocate a unique product slug from title'));
   } catch (err) {
-    next(err);
+    return next(err);
   }
 });
 
 productSchema.index({ category: 1, isPublished: 1 });
 productSchema.index({ isFeatured: 1, isPublished: 1, createdAt: -1 });
 productSchema.index({ isPublished: 1, numReviews: -1, ratings: -1 });
+productSchema.index({ approvalStatus: 1, createdAt: -1 });
 productSchema.index({ price: 1 });
 productSchema.index({ name: 'text', description: 'text', tags: 'text' });
 productSchema.index({ createdAt: -1 });

@@ -55,7 +55,7 @@ const CATEGORY_SPECS = [
   }
 ];
 
-/** 20 products (4 per category) — slugs prefixed so re-runs skip existing rows */
+/** 20 products (4 per category) — `productId` is stable; URL slug is auto-generated from `name` */
 function productSeeds(categoryIds) {
   const img = (id) => ({
     url: `https://images.unsplash.com/${id}?w=800&auto=format&fit=crop&q=70`,
@@ -64,7 +64,7 @@ function productSeeds(categoryIds) {
 
   return [
     {
-      slug: 'seed-nova-electronics-1',
+      productId: 'seed-nova-electronics-1',
       name: 'Wireless Noise-Cancelling Headphones',
       category: categoryIds.electronics,
       price: 149.99,
@@ -81,7 +81,7 @@ function productSeeds(categoryIds) {
       tags: ['audio', 'headphones']
     },
     {
-      slug: 'seed-nova-electronics-2',
+      productId: 'seed-nova-electronics-2',
       name: 'USB-C 7-in-1 Hub',
       category: categoryIds.electronics,
       price: 49.99,
@@ -97,7 +97,7 @@ function productSeeds(categoryIds) {
       tags: ['usb', 'hub']
     },
     {
-      slug: 'seed-nova-electronics-3',
+      productId: 'seed-nova-electronics-3',
       name: 'Smart Watch — Nova Fit',
       category: categoryIds.electronics,
       price: 199.99,
@@ -114,7 +114,7 @@ function productSeeds(categoryIds) {
       tags: ['wearable', 'fitness']
     },
     {
-      slug: 'seed-nova-electronics-4',
+      productId: 'seed-nova-electronics-4',
       name: 'Portable 20W Power Bank',
       category: categoryIds.electronics,
       price: 34.99,
@@ -130,7 +130,7 @@ function productSeeds(categoryIds) {
     },
 
     {
-      slug: 'seed-nova-fashion-1',
+      productId: 'seed-nova-fashion-1',
       name: 'Organic Cotton Crew Tee',
       category: categoryIds.fashion,
       price: 24.99,
@@ -146,7 +146,7 @@ function productSeeds(categoryIds) {
       tags: ['tee', 'basics']
     },
     {
-      slug: 'seed-nova-fashion-2',
+      productId: 'seed-nova-fashion-2',
       name: 'Slim Denim Jacket — Indigo',
       category: categoryIds.fashion,
       price: 89.99,
@@ -161,7 +161,7 @@ function productSeeds(categoryIds) {
       tags: ['denim', 'outerwear']
     },
     {
-      slug: 'seed-nova-fashion-3',
+      productId: 'seed-nova-fashion-3',
       name: 'Leather Minimal Sneakers',
       category: categoryIds.fashion,
     price: 119.99,
@@ -177,7 +177,7 @@ function productSeeds(categoryIds) {
       tags: ['shoes', 'leather']
     },
     {
-      slug: 'seed-nova-fashion-4',
+      productId: 'seed-nova-fashion-4',
       name: 'Canvas Roll-Top Backpack',
       category: categoryIds.fashion,
       price: 64.5,
@@ -193,7 +193,7 @@ function productSeeds(categoryIds) {
     },
 
     {
-      slug: 'seed-nova-home-1',
+      productId: 'seed-nova-home-1',
       name: 'Matte Black Desk Lamp',
       category: categoryIds.home,
       price: 59.99,
@@ -208,7 +208,7 @@ function productSeeds(categoryIds) {
       tags: ['lighting', 'desk']
     },
     {
-      slug: 'seed-nova-home-2',
+      productId: 'seed-nova-home-2',
       name: 'Linen Throw Pillow Set (x2)',
       category: categoryIds.home,
       price: 44.99,
@@ -223,7 +223,7 @@ function productSeeds(categoryIds) {
       tags: ['decor', 'pillow']
     },
     {
-      slug: 'seed-nova-home-3',
+      productId: 'seed-nova-home-3',
       name: 'Stoneware Mug Set (x4)',
       category: categoryIds.home,
       price: 36.0,
@@ -238,7 +238,7 @@ function productSeeds(categoryIds) {
       tags: ['kitchen', 'mugs']
     },
     {
-      slug: 'seed-nova-home-4',
+      productId: 'seed-nova-home-4',
       name: 'Silent Wall Clock 12"',
       category: categoryIds.home,
       price: 29.99,
@@ -254,7 +254,7 @@ function productSeeds(categoryIds) {
     },
 
     {
-      slug: 'seed-nova-beauty-1',
+      productId: 'seed-nova-beauty-1',
       name: 'Daily Hydrating Face Moisturiser',
       category: categoryIds.beauty,
       price: 22.99,
@@ -269,7 +269,7 @@ function productSeeds(categoryIds) {
       tags: ['skincare', 'moisturiser']
     },
     {
-      slug: 'seed-nova-beauty-2',
+      productId: 'seed-nova-beauty-2',
       name: 'Tinted Lip Balm Trio',
       category: categoryIds.beauty,
       price: 18.5,
@@ -284,7 +284,7 @@ function productSeeds(categoryIds) {
       tags: ['lips', 'spf']
     },
     {
-      slug: 'seed-nova-beauty-3',
+      productId: 'seed-nova-beauty-3',
       name: 'Argan Oil Shampoo Bar',
       category: categoryIds.beauty,
       price: 12.99,
@@ -299,7 +299,7 @@ function productSeeds(categoryIds) {
       tags: ['hair', 'eco']
     },
     {
-      slug: 'seed-nova-beauty-4',
+      productId: 'seed-nova-beauty-4',
       name: 'Shea Butter Hand Cream',
       category: categoryIds.beauty,
       price: 14.0,
@@ -315,7 +315,7 @@ function productSeeds(categoryIds) {
     },
 
     {
-      slug: 'seed-nova-sports-1',
+      productId: 'seed-nova-sports-1',
       name: 'Pro Grip Yoga Mat 6mm',
       category: categoryIds.sports,
       price: 39.99,
@@ -331,7 +331,7 @@ function productSeeds(categoryIds) {
       tags: ['yoga', 'mat']
     },
     {
-      slug: 'seed-nova-sports-2',
+      productId: 'seed-nova-sports-2',
       name: 'Insulated Steel Water Bottle 750ml',
       category: categoryIds.sports,
       price: 28.99,
@@ -346,7 +346,7 @@ function productSeeds(categoryIds) {
       tags: ['hydration', 'bottle']
     },
     {
-      slug: 'seed-nova-sports-3',
+      productId: 'seed-nova-sports-3',
       name: 'Resistance Bands Set (5)',
       category: categoryIds.sports,
       price: 24.99,
@@ -361,7 +361,7 @@ function productSeeds(categoryIds) {
       tags: ['training', 'bands']
     },
     {
-      slug: 'seed-nova-sports-4',
+      productId: 'seed-nova-sports-4',
       name: 'Speed Jump Rope — Steel Cable',
       category: categoryIds.sports,
       price: 19.99,
@@ -405,12 +405,12 @@ async function seedProducts(categoryIds) {
   let skipped = 0;
 
   for (const doc of seeds) {
-    const exists = await Product.exists({ slug: doc.slug });
+    const exists = await Product.exists({ productId: doc.productId });
     if (exists) {
       skipped += 1;
       continue;
     }
-    await Product.create({ ...doc, productId: doc.slug });
+    await Product.create(doc);
     created += 1;
   }
 

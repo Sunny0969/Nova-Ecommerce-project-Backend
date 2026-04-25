@@ -129,11 +129,92 @@ function shapeListItem(doc) {
     price: Number(d.price) || 0,
     stock: Number.isFinite(Number(d.stock)) ? Math.max(0, Math.floor(Number(d.stock))) : 0,
     isPublished: Boolean(d.isPublished),
+    approvalStatus: d.approvalStatus || 'approved',
     imageUrl: firstImg,
+    submittedByStaff:
+      d.submittedByStaff && typeof d.submittedByStaff === 'object'
+        ? { _id: d.submittedByStaff._id, name: d.submittedByStaff.name, email: d.submittedByStaff.email }
+        : d.submittedByStaff || null,
     category: { name: categoryLabel, slug: categorySlug, _id: cat?._id || cat },
     createdAt: d.createdAt
   };
 }
+
+/**
+ * GET /api/admin/products/pending — products awaiting approval
+ * Register before /:id
+ */
+router.get('/pending', async (req, res) => {
+  try {
+    const rows = await Product.find({ approvalStatus: 'pending_approval' })
+      .populate({ path: 'submittedByStaff', select: 'name email' })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean();
+    const withCats = await attachCategoriesToProducts(rows);
+    ok(res, withCats.map(shapeListItem));
+  } catch (e) {
+    console.error('Admin pending products:', e);
+    fail(res, 500, e.message || 'Failed to load pending products');
+  }
+});
+
+/**
+ * POST /api/admin/products/:id/approve — approve product and publish it
+ */
+router.post('/:id/approve', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) return fail(res, 400, 'Invalid product id');
+    const updated = await Product.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          approvalStatus: 'approved',
+          isPublished: true,
+          approvedBy: req.authUserId || null,
+          approvedAt: new Date(),
+          rejectionReason: ''
+        }
+      },
+      { new: true }
+    ).lean();
+    if (!updated) return fail(res, 404, 'Product not found');
+    ok(res, updated);
+  } catch (e) {
+    console.error('Admin approve product:', e);
+    fail(res, 500, e.message || 'Failed to approve product');
+  }
+});
+
+/**
+ * POST /api/admin/products/:id/reject — reject with { reason }
+ */
+router.post('/:id/reject', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) return fail(res, 400, 'Invalid product id');
+    const reason = String(req.body?.reason || '').trim().slice(0, 2000);
+    const updated = await Product.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          approvalStatus: 'rejected',
+          isPublished: false,
+          approvedBy: null,
+          approvedAt: null,
+          rejectionReason: reason
+        }
+      },
+      { new: true }
+    ).lean();
+    if (!updated) return fail(res, 404, 'Product not found');
+    ok(res, updated);
+  } catch (e) {
+    console.error('Admin reject product:', e);
+    fail(res, 500, e.message || 'Failed to reject product');
+  }
+});
 
 /**
  * Form payload: full product (drafts, unpublished) for admin editor.

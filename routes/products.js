@@ -8,6 +8,7 @@ const StockNotification = require('../models/StockNotification');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const requireAdmin = require('../middleware/requireAdmin');
+const { adminOrStaffPermission } = require('../middleware/staffAuth');
 const { requireJwtAuth, attachJwtUserSilent } = require('../middleware/jwtAuth');
 const { uploadImageBuffer, deleteByPublicId } = require('../lib/cloudinary');
 const { queueProductEmbeddingUpdate, hybridSearch, suggestQueries } = require('../services/aiSearch');
@@ -91,6 +92,8 @@ function shapeProductDoc(doc) {
     inStock: stockQuantity > 0,
     isFeatured: Boolean(d.isFeatured),
     isPublished: Boolean(d.isPublished),
+    approvalStatus: d.approvalStatus || 'approved',
+    rejectionReason: d.rejectionReason || '',
     discountPercentage: d.discountPercentage,
     tags: Array.isArray(d.tags) ? d.tags : [],
     sku: d.sku != null && String(d.sku).trim() ? String(d.sku).trim() : undefined,
@@ -512,7 +515,7 @@ function parseMultipartBody(req) {
  */
 router.post(
   '/',
-  requireAdmin,
+  ...adminOrStaffPermission('manageProducts'),
   upload.array('images', 12),
   async (req, res) => {
     try {
@@ -567,7 +570,12 @@ router.post(
         tags: Array.isArray(parsed.tags) ? parsed.tags.map(String) : [],
         images: uploaded,
         isFeatured: parsed.isFeatured,
-        isPublished: parsed.isPublished,
+        isPublished: req.staff ? false : parsed.isPublished,
+        approvalStatus: req.staff ? 'pending_approval' : 'approved',
+        approvedBy: req.staff ? null : req.authUserId || null,
+        approvedAt: req.staff ? null : new Date(),
+        rejectionReason: '',
+        submittedByStaff: req.staff ? req.staff.id : null,
         ratings: 0,
         numReviews: 0
       };
@@ -579,9 +587,6 @@ router.post(
       }
       if (parsed.lowStockThreshold !== undefined) {
         createPayload.lowStockThreshold = parsed.lowStockThreshold;
-      }
-      if (parsed.slug) {
-        createPayload.slug = parsed.slug;
       }
       const doc = await Product.create(createPayload);
 
@@ -645,6 +650,16 @@ router.patch('/:id/stock', requireAdmin, async (req, res) => {
     }
 
     product.stock = Math.floor(n);
+    // Staff updates always require re-approval.
+    if (req.staff) {
+      product.approvalStatus = 'pending_approval';
+      product.isPublished = false;
+      product.approvedBy = null;
+      product.approvedAt = null;
+      product.rejectionReason = '';
+      product.submittedByStaff = req.staff.id;
+    }
+
     await product.save();
 
     const updated = await Product.findById(product._id)
@@ -711,7 +726,7 @@ function parseImageBuildOrder(req) {
  */
 router.put(
   '/:id',
-  requireAdmin,
+  ...adminOrStaffPermission('manageProducts'),
   optionalProductImagesUpload,
   async (req, res) => {
     try {
@@ -759,8 +774,10 @@ router.put(
           product.variantGroupKey = parsed.variantGroupKey || '';
         }
         if (req.body.isPublished !== undefined) {
-          product.isPublished =
-            req.body.isPublished === true || req.body.isPublished === 'true';
+          if (!req.staff) {
+            product.isPublished =
+              req.body.isPublished === true || req.body.isPublished === 'true';
+          }
         }
 
         if (parsed.lowStockThreshold !== undefined) {
@@ -768,13 +785,6 @@ router.put(
             product.lowStockThreshold = null;
           } else {
             product.lowStockThreshold = Math.max(0, Math.floor(parsed.lowStockThreshold));
-          }
-        }
-        if (parsed.slug !== undefined) {
-          if (parsed.slug) {
-            product.slug = parsed.slug;
-          } else {
-            product.set('slug', null);
           }
         }
 
@@ -894,7 +904,7 @@ router.put(
         if (body.sku !== undefined) product.sku = body.sku ? String(body.sku) : undefined;
         if (body.tags != null) product.tags = Array.isArray(body.tags) ? body.tags : [];
         if (body.isFeatured != null) product.isFeatured = Boolean(body.isFeatured);
-        if (body.isPublished != null) product.isPublished = Boolean(body.isPublished);
+        if (!req.staff && body.isPublished != null) product.isPublished = Boolean(body.isPublished);
         if (body.color !== undefined) product.color = String(body.color || '').trim().slice(0, 120);
         if (body.texture !== undefined) product.texture = String(body.texture || '').trim().slice(0, 120);
         if (body.size !== undefined) product.size = String(body.size || '').trim().slice(0, 120);
@@ -908,19 +918,6 @@ router.put(
             const n = Math.floor(Number(body.lowStockThreshold));
             product.lowStockThreshold =
               Number.isInteger(n) && n >= 0 ? n : null;
-          }
-        }
-        if (body.slug !== undefined) {
-          if (body.slug == null || String(body.slug).trim() === '') {
-            product.set('slug', null);
-          } else {
-            product.slug = String(body.slug)
-              .trim()
-              .toLowerCase()
-              .replace(/[^a-z0-9-]+/g, '-')
-              .replace(/[0-9]+/g, '')
-              .replace(/-+/g, '-')
-              .replace(/^-|-$/g, '');
           }
         }
         if (body.color !== undefined) product.color = String(body.color || '').trim().slice(0, 120);

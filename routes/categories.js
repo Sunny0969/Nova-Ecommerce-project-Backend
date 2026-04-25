@@ -6,6 +6,7 @@ const slugify = require('slugify');
 const Category = require('../models/Category');
 const Product = require('../models/Product');
 const requireAdmin = require('../middleware/requireAdmin');
+const { adminOrStaffPermission } = require('../middleware/staffAuth');
 const { uploadImageBuffer, deleteByPublicId } = require('../lib/cloudinary');
 
 const router = express.Router();
@@ -78,7 +79,7 @@ router.get('/', async (req, res) => {
  * PUT /api/categories/reorder — admin: bulk update displayOrder
  * Body: { items: [{ id: string, displayOrder: number }, ...] }
  */
-router.put('/reorder', requireAdmin, async (req, res) => {
+router.put('/reorder', ...adminOrStaffPermission('manageCategories'), async (req, res) => {
   try {
     const { items } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
@@ -119,7 +120,7 @@ router.put('/reorder', requireAdmin, async (req, res) => {
 /**
  * POST /api/categories — admin: create (optional image → Cloudinary)
  */
-router.post('/', requireAdmin, upload.single('image'), async (req, res) => {
+router.post('/', ...adminOrStaffPermission('manageCategories'), upload.single('image'), async (req, res) => {
   try {
     const name = req.body.name != null ? String(req.body.name).trim() : '';
     if (!name) {
@@ -249,7 +250,7 @@ function optionalImageUpload(req, res, next) {
 /**
  * PUT /api/categories/:id — admin: update (JSON or multipart with image)
  */
-router.put('/:id', requireAdmin, optionalImageUpload, async (req, res) => {
+router.put('/:id', ...adminOrStaffPermission('manageCategories'), optionalImageUpload, async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) {
@@ -357,7 +358,7 @@ router.put('/:id', requireAdmin, optionalImageUpload, async (req, res) => {
 /**
  * DELETE /api/categories/:id — admin: delete if no products reference it
  */
-router.delete('/:id', requireAdmin, async (req, res) => {
+router.delete('/:id', ...adminOrStaffPermission('manageCategories'), async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) {
