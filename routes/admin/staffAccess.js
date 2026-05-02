@@ -1,14 +1,24 @@
 /**
  * Staff access management — /api/admin/staff
- * Mounted behind admin auth (main admin only).
+ * Mount: app.use('/api/admin/staff', requireJwtAuth, requireAdmin, require('./routes/admin/staffAccess'));
  */
 const express = require('express');
 const mongoose = require('mongoose');
 const StaffAccess = require('../../models/StaffAccess');
 const User = require('../../models/User');
-const { sendMail } = require('../../lib/email');
 
 const router = express.Router();
+
+// Email send karna optional hai — agar module exist na kare to crash nahi hoga
+let sendMail = null;
+try {
+  const emailLib = require('../../lib/email');
+  sendMail = emailLib.sendMail || emailLib.default || null;
+} catch (e) {
+  console.warn('[staffAccess] Email module not available — emails will be skipped:', e.message);
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
 function ok(res, data, status = 200) {
   return res.status(status).json({ success: true, data });
@@ -18,16 +28,24 @@ function fail(res, status, message) {
   return res.status(status).json({ success: false, message });
 }
 
-function normalizeEmail(email) {
-  return String(email || '').trim().toLowerCase();
-}
+// ─── Routes ─────────────────────────────────────────────────────────────────
 
-function publicStaff(staffDoc) {
-  if (!staffDoc) return null;
-  const d = typeof staffDoc.toObject === 'function' ? staffDoc.toObject() : staffDoc;
-  delete d.password;
-  return d;
-}
+/**
+ * GET /api/admin/staff
+ * List all staff members
+ */
+router.get('/', async (req, res) => {
+  try {
+    const staffMembers = await StaffAccess.find()
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .lean();
+    return ok(res, staffMembers);
+  } catch (err) {
+    console.error('[staffAccess] GET / error:', err);
+    return fail(res, 500, 'Failed to load staff list');
+  }
+});
 
 /**
  * POST /api/admin/staff/create
@@ -35,128 +53,138 @@ function publicStaff(staffDoc) {
  */
 router.post('/create', async (req, res) => {
   try {
-    const name = String(req.body?.name || '').trim();
-    const email = normalizeEmail(req.body?.email);
-    const password = String(req.body?.password || '');
-    const permissions = req.body?.permissions && typeof req.body.permissions === 'object' ? req.body.permissions : {};
+    const { name, email, password } = req.body;
+    const permissions = req.body?.permissions || {};
 
-    if (!name) return fail(res, 400, 'Name is required');
-    if (!email) return fail(res, 400, 'Email is required');
-    if (!password || password.length < 6) {
+    // Validation
+    if (!name?.trim()) return fail(res, 400, 'Name is required');
+    if (!email?.trim()) return fail(res, 400, 'Email is required');
+    if (!password || String(password).length < 6) {
       return fail(res, 400, 'Password must be at least 6 characters');
     }
 
-    const existsUser = await User.exists({ email });
+    const emailLower = email.trim().toLowerCase();
+
+    // Duplicate check — User collection
+    const existsUser = await User.exists({ email: emailLower });
     if (existsUser) return fail(res, 409, 'A user with this email already exists');
-    const existsStaff = await StaffAccess.exists({ email });
+
+    // Duplicate check — StaffAccess collection
+    const existsStaff = await StaffAccess.exists({ email: emailLower });
     if (existsStaff) return fail(res, 409, 'A staff member with this email already exists');
 
-    const createdBy = req.authUserId && mongoose.Types.ObjectId.isValid(req.authUserId)
-      ? req.authUserId
-      : undefined;
-
+    // Create staff member (password hashing is done by pre-save hook in model)
     const staff = await StaffAccess.create({
-      name,
-      email,
+      name: name.trim(),
+      email: emailLower,
       password,
-      createdBy,
-      permissions
+      createdBy: req.authUserId || req.userId || req.user?._id || null,
+      permissions: {
+        manageProducts:   !!permissions.manageProducts,
+        manageCategories: !!permissions.manageCategories,
+        manageOrders:     !!permissions.manageOrders,
+        manageBlog:       !!permissions.manageBlog,
+        manageCustomers:  !!permissions.manageCustomers,
+        viewAnalytics:    !!permissions.viewAnalytics,
+        manageCoupons:    !!permissions.manageCoupons
+      }
     });
 
-    const site = process.env.FRONTEND_URL || '';
-    const staffLoginLink = site ? `${String(site).replace(/\/$/, '')}/staff-login` : '/staff-login';
-
-    await sendMail({
-      to: email,
-      subject: 'You have been given access to Nova Shop Admin',
-      text: [
-        'You have been granted staff access to Nova Shop Admin.',
-        '',
-        `Email: ${email}`,
-        `Password: ${password}`,
-        '',
-        `Login: ${staffLoginLink}`
-      ].join('\n')
-    });
-
-    const safe = await StaffAccess.findById(staff._id)
-      .select('name email status blockedUntil permissions lastLogin createdAt updatedAt createdBy')
-      .lean();
-    return ok(res, safe, 201);
-  } catch (err) {
-    if (err?.code === 11000) {
-      return fail(res, 409, 'Duplicate email');
+    // Optional: send welcome email (won't crash if it fails)
+    if (typeof sendMail === 'function') {
+      try {
+        const site = process.env.FRONTEND_URL || 'http://localhost:3000';
+        await sendMail({
+          to: emailLower,
+          subject: 'Nova Shop — Staff Access Granted',
+          text: [
+            `Hello ${name.trim()},`,
+            '',
+            'You have been added as a staff member at Nova Shop.',
+            `Email:    ${emailLower}`,
+            `Password: ${password}`,
+            `Login:    ${site}/staff-login`
+          ].join('\n')
+        });
+      } catch (mailErr) {
+        console.warn('[staffAccess] Email send failed (staff still created):', mailErr.message);
+      }
     }
-    console.error('staff create:', err);
-    return fail(res, 500, err.message || 'Failed to create staff');
-  }
-});
 
-/**
- * GET /api/admin/staff
- * Return all staff members (no passwords).
- */
-router.get('/', async (req, res) => {
-  try {
-    const rows = await StaffAccess.find()
-      .select('name email status blockedUntil permissions lastLogin createdAt updatedAt createdBy')
-      .sort({ createdAt: -1 })
-      .lean();
-    return ok(res, rows);
+    const result = await StaffAccess.findById(staff._id).select('-password').lean();
+    return ok(res, result, 201);
+
   } catch (err) {
-    console.error('staff list:', err);
-    return fail(res, 500, err.message || 'Failed to load staff');
+    console.error('[staffAccess] POST /create error:', err);
+    // MongoDB duplicate key error
+    if (err.code === 11000) {
+      return fail(res, 409, 'A staff member with this email already exists');
+    }
+    return fail(res, 500, err.message || 'Failed to create staff member');
   }
 });
 
 /**
  * PUT /api/admin/staff/:id/permissions
+ * Body: { permissions: { manageProducts, ... } }
  */
 router.put('/:id/permissions', async (req, res) => {
   try {
-    const id = String(req.params.id || '').trim();
-    if (!mongoose.Types.ObjectId.isValid(id)) return fail(res, 400, 'Invalid staff id');
-    const permissions = req.body?.permissions && typeof req.body.permissions === 'object' ? req.body.permissions : {};
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return fail(res, 400, 'Invalid staff ID');
 
-    const staff = await StaffAccess.findByIdAndUpdate(
+    const permissions = req.body?.permissions || {};
+
+    const updated = await StaffAccess.findByIdAndUpdate(
       id,
-      { $set: { permissions } },
-      { new: true }
-    )
-      .select('name email status blockedUntil permissions lastLogin createdAt updatedAt createdBy')
-      .lean();
+      {
+        $set: {
+          'permissions.manageProducts':   !!permissions.manageProducts,
+          'permissions.manageCategories': !!permissions.manageCategories,
+          'permissions.manageOrders':     !!permissions.manageOrders,
+          'permissions.manageBlog':       !!permissions.manageBlog,
+          'permissions.manageCustomers':  !!permissions.manageCustomers,
+          'permissions.viewAnalytics':    !!permissions.viewAnalytics,
+          'permissions.manageCoupons':    !!permissions.manageCoupons
+        }
+      },
+      { new: true, runValidators: true }
+    ).select('-password').lean();
 
-    if (!staff) return fail(res, 404, 'Staff member not found');
-    return ok(res, staff);
+    if (!updated) return fail(res, 404, 'Staff member not found');
+    return ok(res, updated);
+
   } catch (err) {
-    console.error('staff permissions:', err);
+    console.error('[staffAccess] PUT /:id/permissions error:', err);
     return fail(res, 500, err.message || 'Failed to update permissions');
   }
 });
 
 /**
  * POST /api/admin/staff/:id/block
- * Body: { duration } duration in hours (0 = permanent)
+ * Body: { duration: number (hours, 0 = permanent) }
  */
 router.post('/:id/block', async (req, res) => {
   try {
-    const id = String(req.params.id || '').trim();
-    if (!mongoose.Types.ObjectId.isValid(id)) return fail(res, 400, 'Invalid staff id');
-    const duration = Number(req.body?.duration ?? 0);
-    const now = Date.now();
-    const blockedUntil = duration > 0 ? new Date(now + duration * 60 * 60 * 1000) : null;
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return fail(res, 400, 'Invalid staff ID');
 
-    const staff = await StaffAccess.findByIdAndUpdate(
+    const durationHours = Number(req.body?.duration ?? 24);
+    const blockedUntil = durationHours > 0
+      ? new Date(Date.now() + durationHours * 60 * 60 * 1000)
+      : null; // null = permanent
+
+    const updated = await StaffAccess.findByIdAndUpdate(
       id,
       { $set: { status: 'blocked', blockedUntil } },
       { new: true }
-    )
-      .select('name email status blockedUntil permissions lastLogin createdAt updatedAt createdBy')
-      .lean();
-    if (!staff) return fail(res, 404, 'Staff member not found');
-    return ok(res, staff);
+    ).select('-password').lean();
+
+    if (!updated) return fail(res, 404, 'Staff member not found');
+    return ok(res, updated);
+
   } catch (err) {
-    console.error('staff block:', err);
+    console.error('[staffAccess] POST /:id/block error:', err);
     return fail(res, 500, err.message || 'Failed to block staff');
   }
 });
@@ -166,20 +194,20 @@ router.post('/:id/block', async (req, res) => {
  */
 router.post('/:id/unblock', async (req, res) => {
   try {
-    const id = String(req.params.id || '').trim();
-    if (!mongoose.Types.ObjectId.isValid(id)) return fail(res, 400, 'Invalid staff id');
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return fail(res, 400, 'Invalid staff ID');
 
-    const staff = await StaffAccess.findByIdAndUpdate(
+    const updated = await StaffAccess.findByIdAndUpdate(
       id,
       { $set: { status: 'active', blockedUntil: null } },
       { new: true }
-    )
-      .select('name email status blockedUntil permissions lastLogin createdAt updatedAt createdBy')
-      .lean();
-    if (!staff) return fail(res, 404, 'Staff member not found');
-    return ok(res, staff);
+    ).select('-password').lean();
+
+    if (!updated) return fail(res, 404, 'Staff member not found');
+    return ok(res, updated);
+
   } catch (err) {
-    console.error('staff unblock:', err);
+    console.error('[staffAccess] POST /:id/unblock error:', err);
     return fail(res, 500, err.message || 'Failed to unblock staff');
   }
 });
@@ -189,18 +217,17 @@ router.post('/:id/unblock', async (req, res) => {
  */
 router.delete('/:id', async (req, res) => {
   try {
-    const id = String(req.params.id || '').trim();
-    if (!mongoose.Types.ObjectId.isValid(id)) return fail(res, 400, 'Invalid staff id');
-    const staff = await StaffAccess.findByIdAndDelete(id)
-      .select('name email')
-      .lean();
-    if (!staff) return fail(res, 404, 'Staff member not found');
-    return ok(res, { deleted: true, staff });
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return fail(res, 400, 'Invalid staff ID');
+
+    const deleted = await StaffAccess.findByIdAndDelete(id).lean();
+    if (!deleted) return fail(res, 404, 'Staff member not found');
+    return ok(res, { _id: id, deleted: true });
+
   } catch (err) {
-    console.error('staff delete:', err);
-    return fail(res, 500, err.message || 'Failed to delete staff');
+    console.error('[staffAccess] DELETE /:id error:', err);
+    return fail(res, 500, err.message || 'Failed to remove staff');
   }
 });
 
 module.exports = router;
-
