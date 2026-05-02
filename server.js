@@ -127,6 +127,7 @@ mongoose.connection.on('disconnected', () => {
 const { requireJwtAuth } = require('./middleware/jwtAuth');
 const { requireAdmin } = require('./middleware/isAdmin');
 const { adminOrStaffPermission } = require('./middleware/staffAuth');
+const staffRoutes = require('./routes/admin/staffAccess');
 
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/store-settings', require('./routes/storeSettings'));
@@ -188,8 +189,11 @@ app.use(
   '/api/admin/staff',
   requireJwtAuth,
   requireAdmin,
-  require('./routes/admin/staffAccess')
+  staffRoutes
 );
+
+// Admin-only staff management router mounted under /api/staff as well (kept for compatibility)
+app.use('/api/staff', requireJwtAuth, requireAdmin, staffRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'Nova Shop API is running' });

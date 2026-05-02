@@ -93,19 +93,86 @@ router.post('/create', async (req, res) => {
 });
 
 /**
+ * POST /api/admin/staff
+ * Alias of POST /create (keeps compatibility with clients that POST to the mount root).
+ */
+router.post('/', async (req, res) => {
+  // Delegate to the same handler by calling next route via reusing logic.
+  // We inline-call by forwarding to /create handler through Express router stack is non-trivial;
+  // simplest is to duplicate the same code path by invoking the /create handler functionally.
+  // Here, we just call the existing logic by re-running the same create code block:
+  try {
+    const name = String(req.body?.name || '').trim();
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password || '');
+    const permissions = req.body?.permissions && typeof req.body.permissions === 'object' ? req.body.permissions : {};
+
+    if (!name) return fail(res, 400, 'Name is required');
+    if (!email) return fail(res, 400, 'Email is required');
+    if (!password || password.length < 6) {
+      return fail(res, 400, 'Password must be at least 6 characters');
+    }
+
+    const existsUser = await User.exists({ email });
+    if (existsUser) return fail(res, 409, 'A user with this email already exists');
+    const existsStaff = await StaffAccess.exists({ email });
+    if (existsStaff) return fail(res, 409, 'A staff member with this email already exists');
+
+    const createdBy = req.authUserId && mongoose.Types.ObjectId.isValid(req.authUserId)
+      ? req.authUserId
+      : undefined;
+
+    const staff = await StaffAccess.create({
+      name,
+      email,
+      password,
+      createdBy,
+      permissions
+    });
+
+    const site = process.env.FRONTEND_URL || '';
+    const staffLoginLink = site ? `${String(site).replace(/\/$/, '')}/staff-login` : '/staff-login';
+
+    await sendMail({
+      to: email,
+      subject: 'You have been given access to Nova Shop Admin',
+      text: [
+        'You have been granted staff access to Nova Shop Admin.',
+        '',
+        `Email: ${email}`,
+        `Password: ${password}`,
+        '',
+        `Login: ${staffLoginLink}`
+      ].join('\n')
+    });
+
+    const safe = await StaffAccess.findById(staff._id)
+      .select('name email status blockedUntil permissions lastLogin createdAt updatedAt createdBy')
+      .lean();
+    return ok(res, safe, 201);
+  } catch (err) {
+    if (err?.code === 11000) {
+      return fail(res, 409, 'Duplicate email');
+    }
+    console.error('staff create:', err);
+    return fail(res, 500, err.message || 'Failed to create staff');
+  }
+});
+
+/**
  * GET /api/admin/staff
  * Return all staff members (no passwords).
  */
 router.get('/', async (req, res) => {
   try {
-    const rows = await StaffAccess.find()
-      .select('name email status blockedUntil permissions lastLogin createdAt updatedAt createdBy')
+    const staff = await StaffAccess.find({})
+      .select('-password')
       .sort({ createdAt: -1 })
       .lean();
-    return ok(res, rows);
+    return res.json({ success: true, staff });
   } catch (err) {
     console.error('staff list:', err);
-    return fail(res, 500, err.message || 'Failed to load staff');
+    return res.status(500).json({ success: false, message: err.message || 'Failed to load staff' });
   }
 });
 
