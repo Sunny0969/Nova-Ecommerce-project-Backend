@@ -1,6 +1,14 @@
 /**
  * Staff access management — /api/admin/staff
  * Mount: app.use('/api/admin/staff', requireJwtAuth, requireAdmin, require('./routes/admin/staffAccess'));
+ * 
+ * Routes:
+ * GET    /api/admin/staff           - List all staff members
+ * POST   /api/admin/staff/create   - Create new staff member
+ * PUT    /api/admin/staff/:id/permissions - Update permissions
+ * POST   /api/admin/staff/:id/block   - Block staff
+ * POST   /api/admin/staff/:id/unblock - Unblock staff
+ * DELETE /api/admin/staff/:id       - Remove staff
  */
 const express = require('express');
 const mongoose = require('mongoose');

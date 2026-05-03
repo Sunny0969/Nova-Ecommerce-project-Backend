@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "seed": "node scripts/seedDatabase.js",
     "seed:sample": "node scripts/seedSampleProducts.js",
-    "resync:slugs": "node scripts/resyncProductSlugsFromNames.js"
+    "resync:slugs": "node scripts/resyncProductSlugsFromNames.js",
+    "create:user": "node scripts/createUser.js"
   },
   "keywords": [
     "ecommerce",

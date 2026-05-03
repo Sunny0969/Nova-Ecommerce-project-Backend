@@ -34,6 +34,12 @@ app.use(
     crossOriginResourcePolicy: { policy: 'cross-origin' }
   })
 );
+const cors = require('cors');
+
+app.use(cors({
+  origin: 'https://springgreen-emu-512951.hostingersite.com', // Aapka frontend URL
+  credentials: true
+}));
 
 const devLocal = [
   /^https?:\/\/localhost(?::\d+)?$/i,
