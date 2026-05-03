@@ -146,16 +146,16 @@ function shapeListItem(doc) {
  */
 router.get('/pending', async (req, res) => {
   try {
-    const rows = await Product.find({ approvalStatus: 'pending_approval' })
+    const products = await Product.find({ approvalStatus: 'pending_approval' })
       .populate({ path: 'submittedByStaff', select: 'name email' })
       .sort({ createdAt: -1 })
       .limit(200)
       .lean();
-    const withCats = await attachCategoriesToProducts(rows);
-    ok(res, withCats.map(shapeListItem));
+    const withCats = await attachCategoriesToProducts(products);
+    return res.json({ success: true, products: withCats.map(shapeListItem) });
   } catch (e) {
     console.error('Admin pending products:', e);
-    fail(res, 500, e.message || 'Failed to load pending products');
+    return res.status(500).json({ success: false, message: e.message || 'Failed to load pending products' });
   }
 });
 
