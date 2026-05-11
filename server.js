@@ -35,11 +35,6 @@ app.use(
   })
 );
 
-app.use(cors({
-  origin: 'https://springgreen-emu-512951.hostingersite.com', // Aapka frontend URL
-  credentials: true
-}));
-
 const devLocal = [
   /^https?:\/\/localhost(?::\d+)?$/i,
   /^https?:\/\/127\.0\.0\.1(?::\d+)?$/i
@@ -56,8 +51,8 @@ function corsOriginForRequest() {
     .map((s) => s.trim().replace(/\/$/, ''))
     .filter(Boolean);
   const defaults = [
-    'https://ebadahgroup.com',
-    'https://www.ebadahgroup.com'
+    'https://souvenirhandicraft.com',
+    'https://www.souvenirhandicraft.com'
   ];
   return [...new Set([...defaults, ...fromEnv])];
 }

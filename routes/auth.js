@@ -94,7 +94,8 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    const existingUser = await User.findOne({ email });
+    const emailNorm = normalizeEmail(email);
+    const existingUser = await User.findOne({ email: emailNorm });
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -102,7 +103,7 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    if (isReservedAdminEmail(email)) {
+    if (isReservedAdminEmail(emailNorm)) {
       return res.status(403).json({
         success: false,
         code: 'RESERVED_ADMIN_EMAIL',
@@ -113,7 +114,7 @@ router.post('/register', async (req, res) => {
 
     const user = new User({
       name: String(name).trim(),
-      email,
+      email: emailNorm,
       password,
       phone: phone != null ? String(phone).trim() : ''
     });
@@ -148,8 +149,9 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+    const emailNorm = normalizeEmail(email);
 
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email: emailNorm }).select('+password');
     if (!user) {
       return res.status(404).json({
         success: false,
