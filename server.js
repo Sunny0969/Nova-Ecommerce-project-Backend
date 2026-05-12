@@ -137,6 +137,8 @@ app.use('/api/events', require('./routes/events'));
 app.use('/api/recommendations', require('./routes/recommendations'));
 app.use('/api/chatbot', require('./routes/chatbot.impl'));
 app.use('/api/staff', require('./routes/staff'));
+app.use('/api/blog', require('./routes/blog'));
+
 app.use('/api/cart', requireJwtAuth, require('./routes/cart'));
 app.use('/api/wishlist', requireJwtAuth, require('./routes/wishlist'));
 app.use('/api/orders', requireJwtAuth, require('./routes/orders'));
@@ -240,6 +242,12 @@ async function startServer() {
 
     const { ensureSampleProductsIfDbEmpty } = require('./lib/sampleProductsSeed');
     const seedResult = await ensureSampleProductsIfDbEmpty();
+
+    const { ensureSampleBlogsIfDbEmpty } = require('./lib/sampleBlogsSeed');
+    const blogSeedResult = await ensureSampleBlogsIfDbEmpty();
+    if (blogSeedResult.seeded) {
+      console.log(`[Seed] Blog catalog was empty — inserted ${blogSeedResult.added} sample blogs (total: ${blogSeedResult.total}). Reload the blog page.`);
+    }
     if (seedResult.seeded) {
       console.log(
         `[Seed] Catalog was empty — inserted ${seedResult.added} sample products (total: ${seedResult.total}). Refresh the shop page.`
