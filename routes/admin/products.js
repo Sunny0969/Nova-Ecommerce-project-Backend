@@ -19,9 +19,34 @@ function fail(res, status, message) {
   res.status(status).json({ success: false, message });
 }
 
+/**
+ * Staff ownership enforcement for admin product routes.
+ *
+ * IMPORTANT: In `server.js`, /api/admin/products is mounted with:
+ *   requireJwtAuth + requireAdmin
+ * so staff cannot call these endpoints at all right now.
+ *
+ * But the frontend sometimes links staff users into /admin/* editor pages.
+ * If the backend auth wiring changes (or if this file is reused elsewhere),
+ * we still enforce ownership here.
+ */
+function staffOwnershipGuard({ product, req }) {
+  const staffId = req?.staff?.id;
+  if (!staffId) return true; // Admin requests: allow
+
+  return String(product?.submittedByStaff || '') === String(staffId);
+}
+
+function requireOwnershipOrAdmin(req, product) {
+  // `req.adminUser` exists for true admins; `req.staff` for staff middleware.
+  if (req?.adminUser) return true;
+  return staffOwnershipGuard({ product, req });
+}
+
 function isValidObjectId(id) {
   return mongoose.Types.ObjectId.isValid(id);
 }
+
 
 /** True only for 24-char hex strings — avoids mongoose.isValidObjectId false positives. */
 function strictMongoId(v) {
@@ -166,6 +191,14 @@ router.post('/:id/approve', async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) return fail(res, 400, 'Invalid product id');
+
+    const product = await Product.findById(id).lean();
+    if (!product) return fail(res, 404, 'Product not found');
+
+    if (!requireOwnershipOrAdmin(req, product)) {
+      return res.status(403).json({ success: false, message: "You don't have permission for this action" });
+    }
+
     const updated = await Product.findByIdAndUpdate(
       id,
       {
@@ -179,13 +212,14 @@ router.post('/:id/approve', async (req, res) => {
       },
       { new: true }
     ).lean();
-    if (!updated) return fail(res, 404, 'Product not found');
+
     ok(res, updated);
   } catch (e) {
     console.error('Admin approve product:', e);
     fail(res, 500, e.message || 'Failed to approve product');
   }
 });
+
 
 /**
  * POST /api/admin/products/:id/reject — reject with { reason }
@@ -194,6 +228,14 @@ router.post('/:id/reject', async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) return fail(res, 400, 'Invalid product id');
+
+    const product = await Product.findById(id).lean();
+    if (!product) return fail(res, 404, 'Product not found');
+
+    if (!requireOwnershipOrAdmin(req, product)) {
+      return res.status(403).json({ success: false, message: "You don't have permission for this action" });
+    }
+
     const reason = String(req.body?.reason || '').trim().slice(0, 2000);
     const updated = await Product.findByIdAndUpdate(
       id,
@@ -208,13 +250,14 @@ router.post('/:id/reject', async (req, res) => {
       },
       { new: true }
     ).lean();
-    if (!updated) return fail(res, 404, 'Product not found');
+
     ok(res, updated);
   } catch (e) {
     console.error('Admin reject product:', e);
     fail(res, 500, e.message || 'Failed to reject product');
   }
 });
+
 
 /**
  * Form payload: full product (drafts, unpublished) for admin editor.
@@ -340,6 +383,11 @@ router.get('/:id', async (req, res) => {
     if (!docLean) {
       return fail(res, 404, 'Product not found');
     }
+
+    if (!requireOwnershipOrAdmin(req, docLean)) {
+      return res.status(403).json({ success: false, message: "You don't have permission for this action" });
+    }
+
     const doc = await attachCategoryToOneProductLean(docLean);
     ok(res, shapeProductForm(doc));
   } catch (error) {
@@ -347,6 +395,7 @@ router.get('/:id', async (req, res) => {
     fail(res, 500, error.message || 'Failed to fetch product');
   }
 });
+
 
 /**
  * POST /api/admin/products/bulk — { ids: string[], action: 'publish'|'unpublish'|'delete' }
@@ -361,6 +410,17 @@ router.post('/bulk', async (req, res) => {
     const valid = [...new Set(ids.map(String))].filter((id) => isValidObjectId(id));
     if (!valid.length) {
       return fail(res, 400, 'No valid product ids');
+    }
+
+    // Ownership filtering for staff requests
+    if (!req?.adminUser) {
+      const products = await Product.find({ _id: { $in: valid } }).select('submittedByStaff').lean();
+      const allowed = products.filter((p) => requireOwnershipOrAdmin(req, p)).map((p) => String(p._id));
+      if (!allowed.length) {
+        return res.status(403).json({ success: false, message: "You don't have permission for this action" });
+      }
+      valid.length = 0;
+      valid.push(...allowed);
     }
 
     if (action === 'publish') {
@@ -407,5 +467,6 @@ router.post('/bulk', async (req, res) => {
     fail(res, 500, error.message || 'Bulk action failed');
   }
 });
+
 
 module.exports = router;

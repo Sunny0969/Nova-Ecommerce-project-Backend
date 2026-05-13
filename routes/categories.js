@@ -81,7 +81,15 @@ router.get('/', async (req, res) => {
  */
 router.put('/reorder', ...adminOrStaffPermission('manageCategories'), async (req, res) => {
   try {
+    if (req.staff) {
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission for this action"
+      });
+    }
+
     const { items } = req.body;
+
     if (!Array.isArray(items) || items.length === 0) {
       return fail(res, 400, 'items must be a non-empty array');
     }
@@ -182,7 +190,10 @@ router.post('/', ...adminOrStaffPermission('manageCategories'), upload.single('i
       image,
       parent,
       displayOrder: Number.isFinite(displayOrder) ? displayOrder : 0,
-      isActive
+      isActive,
+      // If request comes from staff, scope ownership to that staff.
+      // For admin requests, keep it null (admin can manage everything anyway).
+      createdByStaff: req.staff?.id || null
     });
 
     const withCount = await Category.aggregate([
@@ -260,6 +271,14 @@ router.put('/:id', ...adminOrStaffPermission('manageCategories'), optionalImageU
     const category = await Category.findById(id);
     if (!category) {
       return fail(res, 404, 'Category not found');
+    }
+
+    // Staff can only update their own categories
+    if (req.staff && String(category.createdByStaff || '') !== String(req.staff.id)) {
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission for this action"
+      });
     }
 
     if (req.body.name != null) {
@@ -368,6 +387,14 @@ router.delete('/:id', ...adminOrStaffPermission('manageCategories'), async (req,
     const category = await Category.findById(id);
     if (!category) {
       return fail(res, 404, 'Category not found');
+    }
+
+    // Staff can only delete their own categories
+    if (req.staff && String(category.createdByStaff || '') !== String(req.staff.id)) {
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission for this action"
+      });
     }
 
     const count = await Product.countDocuments({ category: category._id });
