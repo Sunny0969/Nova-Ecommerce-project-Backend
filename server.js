@@ -155,8 +155,7 @@ app.use(
 );
 app.use(
   '/api/admin/products',
-  requireJwtAuth,
-  requireAdmin,
+  ...adminOrStaffPermission('manageProducts'),
   require('./routes/admin/products')
 );
 app.use(
@@ -171,8 +170,7 @@ app.use(
 );
 app.use(
   '/api/admin/categories',
-  requireJwtAuth,
-  requireAdmin,
+  ...adminOrStaffPermission('manageCategories'),
   require('./routes/admin/categories')
 );
 app.use(

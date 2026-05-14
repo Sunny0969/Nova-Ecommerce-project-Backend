@@ -13,7 +13,7 @@ const storeSettingsSchema = new mongoose.Schema(
     },
     shippingStandard: {
       type: Number,
-      default: 4.99,
+      default: 299,
       min: 0
     },
     shippingExpress: {

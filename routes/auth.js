@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const router = express.Router();
 const User = require('../models/User');
 const Review = require('../models/Review');
+const StaffAccess = require('../models/StaffAccess');
 const { mergeSessionCartIntoUserCart } = require('../utils/cartSync');
 const { signToken, verifyToken, requireJwtAuth } = require('../middleware/jwtAuth');
 const { uploadImageBuffer } = require('../lib/cloudinary');
@@ -28,6 +29,58 @@ function userPayload(user) {
     role: user.role,
     phone: user.phone || '',
     avatar: user.avatar || ''
+  };
+}
+
+const STAFF_PERMISSION_KEYS = [
+  'manageProducts',
+  'manageCategories',
+  'manageOrders',
+  'manageBlog',
+  'manageCustomers',
+  'viewAnalytics',
+  'manageCoupons'
+];
+
+function normalizeStaffPermissionMap(rawPermissions) {
+  const source = rawPermissions && typeof rawPermissions === 'object' ? rawPermissions : {};
+  return Object.fromEntries(STAFF_PERMISSION_KEYS.map((key) => [key, source[key] === true]));
+}
+
+function permissionListFromMap(permissionMap) {
+  return Object.entries(permissionMap)
+    .filter(([, allowed]) => allowed === true)
+    .map(([key]) => key);
+}
+
+function authPayloadForUser(user) {
+  const roles = user.role === 'admin' ? ['customer', 'admin'] : ['customer'];
+  return {
+    ...userPayload(user),
+    roles,
+    permissions: [],
+    permissionMap: {},
+    savedShippingAddress: user.savedShippingAddress || null,
+    savedAddresses: Array.isArray(user.savedAddresses)
+      ? user.savedAddresses.map((a) => (typeof a.toObject === 'function' ? a.toObject() : a))
+      : []
+  };
+}
+
+function authPayloadForStaff(staff) {
+  const permissionMap = normalizeStaffPermissionMap(staff.permissions);
+  return {
+    id: staff._id,
+    email: staff.email,
+    name: staff.name,
+    role: 'staff',
+    roles: ['staff'],
+    permissions: permissionListFromMap(permissionMap),
+    permissionMap,
+    phone: '',
+    avatar: '',
+    savedShippingAddress: null,
+    savedAddresses: []
   };
 }
 
@@ -133,7 +186,7 @@ router.post('/register', async (req, res) => {
       success: true,
       message: 'User registered successfully',
       token,
-      user: userPayload(user)
+      user: authPayloadForUser(user)
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -151,18 +204,24 @@ router.post('/login', async (req, res) => {
     const { email, password } = req.body;
     const emailNorm = normalizeEmail(email);
 
-    const user = await User.findOne({ email: emailNorm }).select('+password');
-    if (!user) {
+    const [user, staff] = await Promise.all([
+      User.findOne({ email: emailNorm }).select('+password'),
+      StaffAccess.findOne({ email: emailNorm }).select('+password name email status blockedUntil permissions lastLogin')
+    ]);
+
+    if (!user && !staff) {
       return res.status(404).json({
         success: false,
         code: 'USER_NOT_FOUND',
         message:
-          'No account exists for this email. Please register first, then sign in. (Administrator accounts use the same login once they exist in the database.)'
+          'No account exists for this email. Please register first, then sign in. (Administrator and staff accounts use the same login once they exist in the database.)'
       });
     }
 
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
+    const userMatch = user ? await user.comparePassword(password) : false;
+    const staffMatch = staff ? await staff.comparePassword(password) : false;
+
+    if (!userMatch && !staffMatch) {
       return res.status(401).json({
         success: false,
         code: 'INVALID_PASSWORD',
@@ -170,26 +229,53 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    if (user.role === 'customer' && user.isActive === false) {
-      return res.status(403).json({
-        success: false,
-        message: 'Account suspended'
+    if (userMatch) {
+      if (user.role === 'customer' && user.isActive === false) {
+        return res.status(403).json({
+          success: false,
+          message: 'Account suspended'
+        });
+      }
+
+      const guestCart = req.session.cart ? [...req.session.cart] : [];
+      if (guestCart.length > 0) {
+        await mergeSessionCartIntoUserCart(user._id, guestCart);
+        req.session.cart = [];
+      }
+
+      const token = signToken(user);
+
+      return res.json({
+        success: true,
+        message: 'Login successful',
+        token,
+        user: authPayloadForUser(user)
       });
     }
 
-    const guestCart = req.session.cart ? [...req.session.cart] : [];
-    if (guestCart.length > 0) {
-      await mergeSessionCartIntoUserCart(user._id, guestCart);
-      req.session.cart = [];
+    if (staff.status === 'blocked') {
+      const until = staff.blockedUntil ? new Date(staff.blockedUntil).getTime() : null;
+      if (until && until <= Date.now()) {
+        staff.status = 'active';
+        staff.blockedUntil = null;
+      } else {
+        return res.status(403).json({
+          success: false,
+          message: 'Your access has been blocked'
+        });
+      }
     }
 
-    const token = signToken(user);
+    staff.lastLogin = new Date();
+    await staff.save();
 
-    res.json({
+    const token = staff.getJWTToken();
+
+    return res.json({
       success: true,
       message: 'Login successful',
       token,
-      user: userPayload(user)
+      user: authPayloadForStaff(staff)
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -230,6 +316,34 @@ router.get('/me', async (req, res) => {
       });
     }
 
+    if (payload.role === 'staff') {
+      const staff = await StaffAccess.findById(payload.sub).select('name email status blockedUntil permissions');
+      if (!staff) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      if (staff.status === 'blocked') {
+        const until = staff.blockedUntil ? new Date(staff.blockedUntil).getTime() : null;
+        if (!until || until > Date.now()) {
+          return res.status(403).json({
+            success: false,
+            message: 'Your access has been blocked'
+          });
+        }
+        staff.status = 'active';
+        staff.blockedUntil = null;
+        await staff.save();
+      }
+
+      return res.json({
+        success: true,
+        user: authPayloadForStaff(staff)
+      });
+    }
+
     const user = await User.findById(payload.sub).select('-password');
     if (!user) {
       return res.status(404).json({
@@ -238,15 +352,9 @@ router.get('/me', async (req, res) => {
       });
     }
 
-    res.json({
+    return res.json({
       success: true,
-      user: {
-        ...userPayload(user),
-        savedShippingAddress: user.savedShippingAddress || null,
-        savedAddresses: Array.isArray(user.savedAddresses)
-          ? user.savedAddresses.map((a) => a.toObject())
-          : []
-      }
+      user: authPayloadForUser(user)
     });
   } catch (error) {
     console.error('Auth check error:', error);
@@ -316,13 +424,7 @@ router.patch('/profile', requireJwtAuth, async (req, res) => {
     res.json({
       success: true,
       message: 'Profile updated',
-      user: {
-        ...userPayload(user),
-        savedShippingAddress: user.savedShippingAddress || null,
-        savedAddresses: Array.isArray(user.savedAddresses)
-          ? user.savedAddresses.map((a) => a.toObject())
-          : []
-      }
+      user: authPayloadForUser(user)
     });
   } catch (error) {
     console.error('Profile update error:', error);
@@ -412,13 +514,7 @@ router.post(
       res.json({
         success: true,
         message: 'Avatar updated',
-        user: {
-          ...userPayload(user),
-          savedShippingAddress: user.savedShippingAddress || null,
-          savedAddresses: Array.isArray(user.savedAddresses)
-            ? user.savedAddresses.map((a) => a.toObject())
-            : []
-        }
+        user: authPayloadForUser(user)
       });
     } catch (error) {
       console.error('Avatar route error:', error);

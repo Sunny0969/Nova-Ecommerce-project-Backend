@@ -137,6 +137,11 @@ const productSchema = new mongoose.Schema(
       index: true,
       sparse: true
     },
+    /** Structured options: color / shape / size, each with optional swatch images (Cloudinary). */
+    variantAxes: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({})
+    },
     stock: {
       type: Number,
       required: true,

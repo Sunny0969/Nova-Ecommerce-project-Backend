@@ -11,6 +11,13 @@ const requireAdmin = require('../middleware/requireAdmin');
 const { adminOrStaffPermission } = require('../middleware/staffAuth');
 const { requireJwtAuth, attachJwtUserSilent } = require('../middleware/jwtAuth');
 const { uploadImageBuffer, deleteByPublicId } = require('../lib/cloudinary');
+const {
+  sanitizeVariantAxes,
+  parseVariantAxesFromBodyField,
+  variantAxesToLegacyFlat,
+  diffPublicIdsToRemove,
+  mergeVariantOptionUploads
+} = require('../lib/variantAxes');
 const { queueProductEmbeddingUpdate, hybridSearch, suggestQueries } = require('../services/aiSearch');
 const { logSearchQuery, logSearchClick, getTrendingSearches } = require('../services/searchAnalytics');
 
@@ -18,13 +25,19 @@ const router = express.Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  /** Large admin product saves: many images + long `description` (incl. base64). */
+  limits: {
+    fileSize: 25 * 1024 * 1024,
+    files: 64,
+    fieldSize: 100 * 1024 * 1024
+  },
   fileFilter: (req, file, cb) => {
-    if (file.fieldname !== 'images' && file.fieldname !== 'image') {
-      return cb(null, true);
-    }
-    if (!file.mimetype.startsWith('image/')) {
-      return cb(new Error('Only image uploads are allowed'));
+    const isMain = file.fieldname === 'images' || file.fieldname === 'image';
+    const isVariant = /^variantOptionImage_(color|shape|size)_\d+$/.test(file.fieldname);
+    if (isMain || isVariant) {
+      if (!file.mimetype.startsWith('image/')) {
+        return cb(new Error('Only image uploads are allowed'));
+      }
     }
     cb(null, true);
   }
@@ -104,6 +117,7 @@ function shapeProductDoc(doc) {
       d.variantGroupKey != null && String(d.variantGroupKey).trim()
         ? String(d.variantGroupKey).trim()
         : undefined,
+    variantAxes: sanitizeVariantAxes(d.variantAxes || {}),
     createdAt: d.createdAt,
     updatedAt: d.updatedAt
   };
@@ -506,7 +520,11 @@ function parseMultipartBody(req) {
     variantGroupKey:
       b.variantGroupKey !== undefined
         ? String(b.variantGroupKey ?? '').trim().slice(0, 120)
-        : undefined
+        : undefined,
+    variantAxes: (() => {
+      if (!Object.prototype.hasOwnProperty.call(b, 'variantAxes')) return undefined;
+      return parseVariantAxesFromBodyField(b.variantAxes);
+    })()
   };
 }
 
@@ -516,11 +534,25 @@ function parseMultipartBody(req) {
 router.post(
   '/',
   ...adminOrStaffPermission('manageProducts'),
-  upload.array('images', 12),
+  upload.any(),
   async (req, res) => {
     try {
       const parsed = parseMultipartBody(req);
       const errors = {};
+
+      const files = Array.isArray(req.files) ? req.files : [];
+      for (const f of files) {
+        if (f.fieldname === 'images' || /^variantOptionImage_(color|shape|size)_\d+$/.test(f.fieldname)) continue;
+        if (f.buffer && f.buffer.length) {
+          errors.files = `Unexpected file field: ${f.fieldname}`;
+          break;
+        }
+      }
+      if (errors.files) {
+        return fail(res, 400, 'Validation failed', errors);
+      }
+
+      const mainImages = files.filter((f) => f.fieldname === 'images');
 
       if (!parsed.name) errors.name = 'Required';
       const categoryId = await resolveCategoryId(parsed.category);
@@ -532,8 +564,7 @@ router.post(
         errors.stock = 'Must be a non-negative integer';
       }
 
-      const files = req.files || [];
-      if (!files.length) {
+      if (!mainImages.length) {
         errors.images = 'At least one image is required';
       }
 
@@ -542,7 +573,7 @@ router.post(
       }
 
       const uploaded = [];
-      for (const file of files) {
+      for (const file of mainImages) {
         try {
           const img = await uploadImageBuffer(file.buffer, {
             folder: 'nova-shop/products'
@@ -556,6 +587,19 @@ router.post(
           return fail(res, 502, upErr.message || 'Image upload failed');
         }
       }
+
+      let variantAxes = sanitizeVariantAxes(parsed.variantAxes !== undefined ? parsed.variantAxes : {});
+      try {
+        variantAxes = await mergeVariantOptionUploads(variantAxes, files, uploadImageBuffer);
+      } catch (vErr) {
+        for (const u of uploaded) {
+          await deleteByPublicId(u.public_id);
+        }
+        console.error('Variant image upload error:', vErr);
+        return fail(res, 502, vErr.message || 'Variant image upload failed');
+      }
+
+      const legacy = variantAxesToLegacyFlat(variantAxes);
 
       const createPayload = {
         name: parsed.name,
@@ -577,11 +621,12 @@ router.post(
         rejectionReason: '',
         submittedByStaff: req.staff ? req.staff.id : null,
         ratings: 0,
-        numReviews: 0
+        numReviews: 0,
+        variantAxes,
+        color: legacy.color,
+        texture: legacy.texture,
+        size: legacy.size
       };
-      if (parsed.color !== undefined) createPayload.color = parsed.color || '';
-      if (parsed.texture !== undefined) createPayload.texture = parsed.texture || '';
-      if (parsed.size !== undefined) createPayload.size = parsed.size || '';
       if (parsed.variantGroupKey !== undefined) {
         createPayload.variantGroupKey = parsed.variantGroupKey || '';
       }
@@ -613,16 +658,16 @@ router.post(
       } catch (e) {
         console.warn('[aiSearch] queueProductEmbeddingUpdate(create):', e.message);
       }
-  } catch (error) {
-    if (error.code === 11000) {
+    } catch (error) {
+      if (error.code === 11000) {
         return fail(res, 409, 'A product with this slug already exists');
+      }
+      if (error.name === 'ValidationError') {
+        return fail(res, 400, 'Validation failed', formatMongooseValidation(error));
+      }
+      console.error('Create product error:', error);
+      fail(res, 500, error.message || 'Failed to create product');
     }
-    if (error.name === 'ValidationError') {
-      return fail(res, 400, 'Validation failed', formatMongooseValidation(error));
-    }
-    console.error('Create product error:', error);
-    fail(res, 500, error.message || 'Failed to create product');
-  }
   }
 );
 
@@ -677,7 +722,7 @@ router.patch('/:id/stock', requireAdmin, async (req, res) => {
 
 function optionalProductImagesUpload(req, res, next) {
   if (req.is('multipart/form-data')) {
-    return upload.array('images', 12)(req, res, next);
+    return upload.any()(req, res, next);
   }
   next();
 }
@@ -767,9 +812,6 @@ router.put(
         if (parsed.sku !== undefined) product.sku = parsed.sku || undefined;
         if (Array.isArray(parsed.tags)) product.tags = parsed.tags.map(String);
         product.isFeatured = parsed.isFeatured;
-        if (parsed.color !== undefined) product.color = parsed.color || '';
-        if (parsed.texture !== undefined) product.texture = parsed.texture || '';
-        if (parsed.size !== undefined) product.size = parsed.size || '';
         if (parsed.variantGroupKey !== undefined) {
           product.variantGroupKey = parsed.variantGroupKey || '';
         }
@@ -788,7 +830,8 @@ router.put(
           }
         }
 
-        const newFiles = req.files || [];
+        const allFiles = req.files || [];
+        const newFiles = allFiles.filter((f) => f.fieldname === 'images');
         const buildOrder = parseImageBuildOrder(req);
         const keepIds = parseImagePublicIdsToKeep(req);
 
@@ -875,6 +918,32 @@ router.put(
             }
           }
         }
+
+        if (parsed.variantAxes !== undefined) {
+          const prevAxes = product.variantAxes ? JSON.parse(JSON.stringify(product.variantAxes)) : {};
+          let axes = sanitizeVariantAxes(parsed.variantAxes);
+          try {
+            axes = await mergeVariantOptionUploads(axes, allFiles, uploadImageBuffer);
+          } catch (e) {
+            return fail(res, 502, e.message || 'Variant image upload failed');
+          }
+          for (const pid of diffPublicIdsToRemove(prevAxes, axes)) {
+            try {
+              await deleteByPublicId(pid);
+            } catch (err) {
+              console.warn('Variant image delete:', err.message);
+            }
+          }
+          product.variantAxes = axes;
+          const leg = variantAxesToLegacyFlat(axes);
+          product.color = leg.color;
+          product.texture = leg.texture;
+          product.size = leg.size;
+        } else {
+          if (parsed.color !== undefined) product.color = parsed.color || '';
+          if (parsed.texture !== undefined) product.texture = parsed.texture || '';
+          if (parsed.size !== undefined) product.size = parsed.size || '';
+        }
       } else {
         const body = req.body;
         if (body.name != null) product.name = String(body.name).trim();
@@ -905,9 +974,26 @@ router.put(
         if (body.tags != null) product.tags = Array.isArray(body.tags) ? body.tags : [];
         if (body.isFeatured != null) product.isFeatured = Boolean(body.isFeatured);
         if (!req.staff && body.isPublished != null) product.isPublished = Boolean(body.isPublished);
-        if (body.color !== undefined) product.color = String(body.color || '').trim().slice(0, 120);
-        if (body.texture !== undefined) product.texture = String(body.texture || '').trim().slice(0, 120);
-        if (body.size !== undefined) product.size = String(body.size || '').trim().slice(0, 120);
+        if (body.variantAxes !== undefined) {
+          const prevAxes = product.variantAxes ? JSON.parse(JSON.stringify(product.variantAxes)) : {};
+          const axes = sanitizeVariantAxes(body.variantAxes);
+          for (const pid of diffPublicIdsToRemove(prevAxes, axes)) {
+            try {
+              await deleteByPublicId(pid);
+            } catch (err) {
+              console.warn('Variant image delete:', err.message);
+            }
+          }
+          product.variantAxes = axes;
+          const leg = variantAxesToLegacyFlat(axes);
+          product.color = leg.color;
+          product.texture = leg.texture;
+          product.size = leg.size;
+        } else {
+          if (body.color !== undefined) product.color = String(body.color || '').trim().slice(0, 120);
+          if (body.texture !== undefined) product.texture = String(body.texture || '').trim().slice(0, 120);
+          if (body.size !== undefined) product.size = String(body.size || '').trim().slice(0, 120);
+        }
         if (body.variantGroupKey !== undefined) {
           product.variantGroupKey = String(body.variantGroupKey || '').trim().slice(0, 120);
         }
@@ -919,12 +1005,6 @@ router.put(
             product.lowStockThreshold =
               Number.isInteger(n) && n >= 0 ? n : null;
           }
-        }
-        if (body.color !== undefined) product.color = String(body.color || '').trim().slice(0, 120);
-        if (body.texture !== undefined) product.texture = String(body.texture || '').trim().slice(0, 120);
-        if (body.size !== undefined) product.size = String(body.size || '').trim().slice(0, 120);
-        if (body.variantGroupKey !== undefined) {
-          product.variantGroupKey = String(body.variantGroupKey || '').trim().slice(0, 120);
         }
         if (Array.isArray(body.images)) {
           const nextImages = body.images.map((img) => ({

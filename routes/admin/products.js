@@ -8,6 +8,7 @@ const Product = require('../../models/Product');
 const Category = require('../../models/Category');
 const Review = require('../../models/Review');
 const { deleteByPublicId } = require('../../lib/cloudinary');
+const { sanitizeVariantAxes, collectVariantImagePublicIds } = require('../../lib/variantAxes');
 
 const router = express.Router();
 
@@ -17,6 +18,13 @@ function ok(res, data, status = 200) {
 
 function fail(res, status, message) {
   res.status(status).json({ success: false, message });
+}
+
+function requireMountedAdmin(req, res, next) {
+  if (!req.adminUser) {
+    return fail(res, 403, 'Admin access required');
+  }
+  return next();
 }
 
 function isValidObjectId(id) {
@@ -144,7 +152,7 @@ function shapeListItem(doc) {
  * GET /api/admin/products/pending — products awaiting approval
  * Register before /:id
  */
-router.get('/pending', async (req, res) => {
+router.get('/pending', requireMountedAdmin, async (req, res) => {
   try {
     const products = await Product.find({ approvalStatus: 'pending_approval' })
       .populate({ path: 'submittedByStaff', select: 'name email' })
@@ -162,7 +170,7 @@ router.get('/pending', async (req, res) => {
 /**
  * POST /api/admin/products/:id/approve — approve product and publish it
  */
-router.post('/:id/approve', async (req, res) => {
+router.post('/:id/approve', requireMountedAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) return fail(res, 400, 'Invalid product id');
@@ -190,7 +198,7 @@ router.post('/:id/approve', async (req, res) => {
 /**
  * POST /api/admin/products/:id/reject — reject with { reason }
  */
-router.post('/:id/reject', async (req, res) => {
+router.post('/:id/reject', requireMountedAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) return fail(res, 400, 'Invalid product id');
@@ -255,7 +263,8 @@ function shapeProductForm(p) {
     color: p.color != null ? String(p.color) : '',
     texture: p.texture != null ? String(p.texture) : '',
     size: p.size != null ? String(p.size) : '',
-    variantGroupKey: p.variantGroupKey != null ? String(p.variantGroupKey) : ''
+    variantGroupKey: p.variantGroupKey != null ? String(p.variantGroupKey) : '',
+    variantAxes: sanitizeVariantAxes(p.variantAxes || {})
   };
 }
 
@@ -352,7 +361,7 @@ router.get('/:id', async (req, res) => {
  * POST /api/admin/products/bulk — { ids: string[], action: 'publish'|'unpublish'|'delete' }
  * delete = soft (unpublish). Use action 'deleteHard' to permanently remove (and reviews/images).
  */
-router.post('/bulk', async (req, res) => {
+router.post('/bulk', requireMountedAdmin, async (req, res) => {
   try {
     const { ids, action } = req.body || {};
     if (!Array.isArray(ids) || !ids.length) {
@@ -392,6 +401,13 @@ router.post('/bulk', async (req, res) => {
       for (const product of docs) {
         await Review.deleteMany({ product: product._id });
         await deleteProductImagesFromCloudinary(product.images || []);
+        for (const pid of collectVariantImagePublicIds(product.variantAxes || {})) {
+          try {
+            await deleteByPublicId(pid);
+          } catch (e) {
+            console.warn('Cloudinary delete variant:', e.message);
+          }
+        }
         await Product.deleteOne({ _id: product._id });
       }
       return ok(res, { deleted: docs.length, hard: true });
