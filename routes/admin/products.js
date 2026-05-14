@@ -31,6 +31,7 @@ function isValidObjectId(id) {
   return mongoose.Types.ObjectId.isValid(id);
 }
 
+
 /** True only for 24-char hex strings — avoids mongoose.isValidObjectId false positives. */
 function strictMongoId(v) {
   if (v == null) return false;
@@ -174,6 +175,14 @@ router.post('/:id/approve', requireMountedAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) return fail(res, 400, 'Invalid product id');
+
+    const product = await Product.findById(id).lean();
+    if (!product) return fail(res, 404, 'Product not found');
+
+    if (!requireOwnershipOrAdmin(req, product)) {
+      return res.status(403).json({ success: false, message: "You don't have permission for this action" });
+    }
+
     const updated = await Product.findByIdAndUpdate(
       id,
       {
@@ -187,13 +196,14 @@ router.post('/:id/approve', requireMountedAdmin, async (req, res) => {
       },
       { new: true }
     ).lean();
-    if (!updated) return fail(res, 404, 'Product not found');
+
     ok(res, updated);
   } catch (e) {
     console.error('Admin approve product:', e);
     fail(res, 500, e.message || 'Failed to approve product');
   }
 });
+
 
 /**
  * POST /api/admin/products/:id/reject — reject with { reason }
@@ -202,6 +212,14 @@ router.post('/:id/reject', requireMountedAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) return fail(res, 400, 'Invalid product id');
+
+    const product = await Product.findById(id).lean();
+    if (!product) return fail(res, 404, 'Product not found');
+
+    if (!requireOwnershipOrAdmin(req, product)) {
+      return res.status(403).json({ success: false, message: "You don't have permission for this action" });
+    }
+
     const reason = String(req.body?.reason || '').trim().slice(0, 2000);
     const updated = await Product.findByIdAndUpdate(
       id,
@@ -216,13 +234,14 @@ router.post('/:id/reject', requireMountedAdmin, async (req, res) => {
       },
       { new: true }
     ).lean();
-    if (!updated) return fail(res, 404, 'Product not found');
+
     ok(res, updated);
   } catch (e) {
     console.error('Admin reject product:', e);
     fail(res, 500, e.message || 'Failed to reject product');
   }
 });
+
 
 /**
  * Form payload: full product (drafts, unpublished) for admin editor.
@@ -349,6 +368,11 @@ router.get('/:id', async (req, res) => {
     if (!docLean) {
       return fail(res, 404, 'Product not found');
     }
+
+    if (!requireOwnershipOrAdmin(req, docLean)) {
+      return res.status(403).json({ success: false, message: "You don't have permission for this action" });
+    }
+
     const doc = await attachCategoryToOneProductLean(docLean);
     ok(res, shapeProductForm(doc));
   } catch (error) {
@@ -356,6 +380,7 @@ router.get('/:id', async (req, res) => {
     fail(res, 500, error.message || 'Failed to fetch product');
   }
 });
+
 
 /**
  * POST /api/admin/products/bulk — { ids: string[], action: 'publish'|'unpublish'|'delete' }
@@ -370,6 +395,17 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
     const valid = [...new Set(ids.map(String))].filter((id) => isValidObjectId(id));
     if (!valid.length) {
       return fail(res, 400, 'No valid product ids');
+    }
+
+    // Ownership filtering for staff requests
+    if (!req?.adminUser) {
+      const products = await Product.find({ _id: { $in: valid } }).select('submittedByStaff').lean();
+      const allowed = products.filter((p) => requireOwnershipOrAdmin(req, p)).map((p) => String(p._id));
+      if (!allowed.length) {
+        return res.status(403).json({ success: false, message: "You don't have permission for this action" });
+      }
+      valid.length = 0;
+      valid.push(...allowed);
     }
 
     if (action === 'publish') {
@@ -423,5 +459,6 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
     fail(res, 500, error.message || 'Bulk action failed');
   }
 });
+
 
 module.exports = router;

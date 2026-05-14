@@ -47,6 +47,13 @@ const categorySchema = new mongoose.Schema(
       type: Boolean,
       default: true,
       index: true
+    },
+    // Staff ownership (used to scope staff access to their own categories)
+    createdByStaff: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'StaffAccess',
+      default: null,
+      index: true
     }
   },
   { timestamps: true }
