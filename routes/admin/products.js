@@ -27,6 +27,20 @@ function requireMountedAdmin(req, res, next) {
   return next();
 }
 
+/** Admins may access any product; staff only products they submitted. */
+function requireOwnershipOrAdmin(req, product) {
+  if (req.adminUser) return true;
+  if (!req.staff || !product) return false;
+
+  const owner = product.submittedByStaff;
+  if (!owner) return false;
+
+  const ownerId =
+    typeof owner === 'object' && owner._id != null ? String(owner._id) : String(owner);
+
+  return ownerId === String(req.staff.id);
+}
+
 function isValidObjectId(id) {
   return mongoose.Types.ObjectId.isValid(id);
 }

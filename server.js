@@ -15,7 +15,9 @@ const morgan = require('morgan');
 const compression = require('compression');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+// Port 5000 is often blocked/reserved on Windows (Hyper-V, AirPlay, etc.) — use 5001 locally.
+const PORT = Number(process.env.PORT) || 5001;
+const HOST = process.env.HOST || '127.0.0.1';
 
 const MONGODB_URI = process.env.MONGODB_URI;
 if (!MONGODB_URI) {
@@ -232,8 +234,8 @@ async function startServer() {
     await mongoose.connect(MONGODB_URI, MONGOOSE_CONNECT_OPTS);
     console.log('[MongoDB] Connected');
 
-    app.listen(PORT, () => {
-      console.log(`[Server] Listening on port ${PORT}`);
+    app.listen(PORT, HOST, () => {
+      console.log(`[Server] Listening on http://${HOST}:${PORT}`);
     });
   } catch (err) {
     console.error('[MongoDB] Connection failed:', err.message);
