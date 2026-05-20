@@ -15,9 +15,11 @@ const morgan = require('morgan');
 const compression = require('compression');
 
 const app = express();
-// Port 5000 is often blocked/reserved on Windows (Hyper-V, AirPlay, etc.) — use 5001 locally.
+// Port 5000 is often blocked/reserved on Windows — use 5001 locally. Render sets PORT (e.g. 10000).
 const PORT = Number(process.env.PORT) || 5001;
-const HOST = process.env.HOST || '127.0.0.1';
+const isProduction =
+  process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+const HOST = process.env.HOST || (isProduction ? '0.0.0.0' : '127.0.0.1');
 
 const MONGODB_URI = process.env.MONGODB_URI;
 if (!MONGODB_URI) {
@@ -203,6 +205,18 @@ app.use(
   staffRoutes
 );
 
+function sendHealth(res) {
+  res.status(200).json({
+    status: 'ok',
+    service: 'nova-shop-api',
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+  });
+}
+
+/** Render/platform health checks use GET or HEAD on `/` */
+app.get('/', (req, res) => sendHealth(res));
+app.head('/', (req, res) => res.sendStatus(200));
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'Nova Shop API is running' });
 });
@@ -234,8 +248,13 @@ async function startServer() {
     await mongoose.connect(MONGODB_URI, MONGOOSE_CONNECT_OPTS);
     console.log('[MongoDB] Connected');
 
-    app.listen(PORT, HOST, () => {
-      console.log(`[Server] Listening on http://${HOST}:${PORT}`);
+    const server = app.listen(PORT, HOST, () => {
+      console.log(`[Server] Listening on http://${HOST}:${PORT} (${isProduction ? 'production' : 'development'})`);
+    });
+
+    server.on('error', (err) => {
+      console.error('[Server] Failed to start:', err.message);
+      process.exit(1);
     });
   } catch (err) {
     console.error('[MongoDB] Connection failed:', err.message);
