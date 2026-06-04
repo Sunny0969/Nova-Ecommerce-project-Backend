@@ -20,6 +20,7 @@ const {
 } = require('../lib/variantAxes');
 const { queueProductEmbeddingUpdate, hybridSearch, suggestQueries } = require('../services/aiSearch');
 const { logSearchQuery, logSearchClick, getTrendingSearches } = require('../services/searchAnalytics');
+const { saleProductMatchFilter } = require('../lib/productSale');
 
 const router = express.Router();
 
@@ -92,7 +93,13 @@ function shapeProductDoc(doc) {
     name: d.name,
     category: categorySlug || 'fashion',
     price: Number.isFinite(price) ? price : 0,
+    comparePrice: Number.isFinite(comparePrice) ? comparePrice : undefined,
     originalPrice: Number.isFinite(comparePrice) ? comparePrice : undefined,
+    isOnSale:
+      Number.isFinite(comparePrice) &&
+      Number.isFinite(price) &&
+      comparePrice > price &&
+      comparePrice > 0,
     emoji: '📦',
     imageUrl: firstImg,
     images: Array.isArray(d.images) ? d.images : [],
@@ -176,7 +183,8 @@ async function buildListFilter(query) {
     rating,
     search,
     featured,
-    inStock
+    inStock,
+    onSale
   } = query;
 
   const and = [{ isPublished: true }];
@@ -246,6 +254,17 @@ async function buildListFilter(query) {
     and.push({ stock: { $gt: 0 } });
   }
 
+  const tag = String(query.tag || '').trim();
+  if (tag) {
+    and.push({ tags: tag });
+  }
+
+  if (onSale === 'true' || onSale === true) {
+    const saleParts = saleProductMatchFilter();
+    delete saleParts.isPublished;
+    and.push(saleParts);
+  }
+
   return { $and: and };
 }
 
@@ -312,6 +331,51 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('Get products error:', error);
     fail(res, 500, error.message || 'Failed to fetch products');
+  }
+});
+
+/**
+ * GET /api/products/flash-sale — published products with comparePrice > price
+ */
+router.get('/flash-sale', async (req, res) => {
+  try {
+    const limit = Math.min(64, Math.max(1, parseInt(req.query.limit, 10) || 32));
+    const raw = await Product.aggregate([
+      { $match: saleProductMatchFilter() },
+      {
+        $addFields: {
+          _saleDiscountPct: {
+            $multiply: [
+              {
+                $divide: [{ $subtract: ['$comparePrice', '$price'] }, '$comparePrice']
+              },
+              100
+            ]
+          }
+        }
+      },
+      { $sort: { _saleDiscountPct: -1, createdAt: -1 } },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: 'categories',
+          localField: 'category',
+          foreignField: '_id',
+          as: '_categoryPop'
+        }
+      },
+      {
+        $addFields: {
+          category: { $arrayElemAt: ['$_categoryPop', 0] }
+        }
+      },
+      { $project: { _categoryPop: 0, _saleDiscountPct: 0 } }
+    ]);
+
+    ok(res, raw.map(shapeProductDoc));
+  } catch (error) {
+    console.error('Flash sale products error:', error);
+    fail(res, 500, error.message || 'Failed to fetch flash sale products');
   }
 });
 
@@ -451,6 +515,54 @@ router.get('/ai-search', async (req, res) => {
   } catch (error) {
     console.error('AI search error:', error);
     fail(res, 500, error.message || 'AI search failed');
+  }
+});
+
+/**
+ * GET /api/products/category-tags?category=baby-care
+ * Distinct subcategory tags for products in one category (shop filter chips).
+ */
+router.get('/category-tags', async (req, res) => {
+  try {
+    const categorySlug = String(req.query.category || '')
+      .trim()
+      .toLowerCase();
+    if (!categorySlug) {
+      return ok(res, []);
+    }
+
+    const cat = await Category.findOne({ slug: categorySlug, isActive: true }).select(
+      '_id'
+    );
+    if (!cat) {
+      return ok(res, []);
+    }
+
+    const rows = await Product.aggregate([
+      {
+        $match: {
+          isPublished: true,
+          category: cat._id,
+          tags: { $exists: true, $type: 'array', $ne: [] }
+        }
+      },
+      { $unwind: '$tags' },
+      {
+        $match: {
+          tags: { $type: 'string', $ne: '' }
+        }
+      },
+      { $group: { _id: '$tags', count: { $sum: 1 } } },
+      { $sort: { _id: 1 } }
+    ]);
+
+    ok(
+      res,
+      rows.map((r) => ({ tag: r._id, count: r.count }))
+    );
+  } catch (error) {
+    console.error('Category tags error:', error);
+    fail(res, 500, error.message || 'Failed to load category tags');
   }
 });
 

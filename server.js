@@ -129,12 +129,14 @@ const staffRoutes = require('./routes/admin/staffAccess');
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/store-settings', require('./routes/storeSettings'));
 app.use('/api/categories', require('./routes/categories'));
+app.use('/api/brands', require('./routes/brands'));
 app.use('/api/products', require('./routes/products'));
 app.use('/api/events', require('./routes/events'));
 app.use('/api/recommendations', require('./routes/recommendations'));
 app.use('/api/chatbot', require('./routes/chatbot.impl'));
 app.use('/api/staff', require('./routes/staff')); // ✅ public staff auth
 app.use('/api/blog', require('./routes/blog'));
+app.use('/api/public', require('./routes/public'));
 
 /* ============================
    AUTH REQUIRED ROUTES
