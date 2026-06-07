@@ -12,6 +12,11 @@
     "categories:images": "node scripts/updateCategoryImagesFromUrls.js",
     "seed:sample": "node scripts/seedSampleProducts.js",
     "import:xlsx": "node scripts/importProductsFromXlsx.js",
+    "import:blue-pottery": "node scripts/importBluePotteryHtml.js",
+    "categories:sync": "node scripts/syncCategoryVisibility.js",
+    "categories:restore": "node scripts/restoreStorefrontCategories.js",
+    "brands:replace-bazaar": "node scripts/replaceBrandsFromBazaar.js",
+    "brands:hide-bazaar": "node scripts/hideBazaarPlaceholderBrands.js",
     "resync:slugs": "node scripts/resyncProductSlugsFromNames.js",
     "create:admin": "node scripts/createAdminUser.js"
   },

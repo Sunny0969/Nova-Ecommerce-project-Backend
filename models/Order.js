@@ -25,6 +25,16 @@ const paymentResultSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const paymentProofSchema = new mongoose.Schema(
+  {
+    transactionId: { type: String, trim: true, default: '', maxlength: 120 },
+    imageUrl: { type: String, trim: true, default: '' },
+    imagePublicId: { type: String, trim: true, default: '' },
+    submittedAt: { type: Date, default: null }
+  },
+  { _id: false }
+);
+
 const orderItemSchema = new mongoose.Schema(
   {
     product: {
@@ -74,6 +84,11 @@ const orderSchema = new mongoose.Schema(
     },
     paymentResult: {
       type: paymentResultSchema,
+      default: () => ({})
+    },
+    /** Easypaisa / bank transfer — transaction ID and screenshot */
+    paymentProof: {
+      type: paymentProofSchema,
       default: () => ({})
     },
     itemsPrice: {

@@ -1,7 +1,7 @@
 const StoreSettings = require('../models/StoreSettings');
 
 const DEFAULTS = {
-  freeShippingMin: 50,
+  freeShippingMin: 2026,
   shippingStandard: 299,
   shippingExpress: 5.99,
   shippingNextDay: 9.99,

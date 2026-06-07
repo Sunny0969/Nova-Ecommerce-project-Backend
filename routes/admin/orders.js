@@ -4,6 +4,10 @@ const Order = require('../../models/Order');
 const User = require('../../models/User');
 const { sendOrderShippedEmail } = require('../../lib/email');
 const { ORDER_POPULATE } = require('../../services/orderFromPaymentIntent');
+const {
+  hydratePaymentProof,
+  persistHydratedPaymentProof
+} = require('../../utils/paymentProof');
 
 const router = express.Router();
 
@@ -126,6 +130,9 @@ router.get('/', async (req, res) => {
       or.push({
         'orderItems.name': { $regex: escapeRegex(search), $options: 'i' }
       });
+      or.push({
+        'paymentProof.transactionId': { $regex: escapeRegex(search), $options: 'i' }
+      });
 
       const matchingUsers = await User.find({
         $or: [
@@ -185,10 +192,17 @@ router.get('/:id', async (req, res) => {
       return fail(res, 400, 'Invalid order id');
     }
 
-    const order = await Order.findById(id).populate(ORDER_POPULATE);
+    let order = await Order.findById(id).populate(ORDER_POPULATE);
 
     if (!order) {
       return fail(res, 404, 'Order not found');
+    }
+
+    hydratePaymentProof(order);
+    try {
+      await persistHydratedPaymentProof(order);
+    } catch (persistErr) {
+      console.warn('Payment proof hydrate save skipped:', persistErr.message);
     }
 
     return ok(res, 200, { data: { order } });
@@ -247,6 +261,88 @@ router.put('/:id/status', async (req, res) => {
     }
     console.error('Admin update status error:', error);
     return fail(res, 500, error.message || 'Failed to update status');
+  }
+});
+
+/**
+ * PUT /api/admin/orders/:id/payment-proof — admin sets transaction ID / notes
+ */
+router.put('/:id/payment-proof', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return fail(res, 400, 'Invalid order id');
+    }
+
+    const order = await Order.findById(id);
+    if (!order) {
+      return fail(res, 404, 'Order not found');
+    }
+
+    const txnId =
+      req.body.transactionId != null ? String(req.body.transactionId).trim().slice(0, 120) : '';
+
+    if (!txnId) {
+      return fail(res, 400, 'transactionId is required');
+    }
+
+    order.paymentProof = {
+      transactionId: txnId,
+      imageUrl: order.paymentProof?.imageUrl || '',
+      imagePublicId: order.paymentProof?.imagePublicId || '',
+      submittedAt: new Date()
+    };
+
+    const baseNote = order.notes || '';
+    if (!/Transaction\s*ID\s*:/i.test(baseNote)) {
+      order.notes = `${baseNote} Transaction ID: ${txnId}.`.trim();
+    }
+
+    await order.save();
+
+    const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
+    return ok(res, 200, {
+      message: 'Payment proof updated',
+      data: { order: populated }
+    });
+  } catch (error) {
+    console.error('Admin payment proof error:', error);
+    return fail(res, 500, error.message || 'Failed to update payment proof');
+  }
+});
+
+/**
+ * PUT /api/admin/orders/:id/paid — mark COD / bank transfer received
+ */
+router.put('/:id/paid', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return fail(res, 400, 'Invalid order id');
+    }
+
+    const order = await Order.findById(id);
+    if (!order) {
+      return fail(res, 404, 'Order not found');
+    }
+
+    const paid = req.body.isPaid !== false;
+    order.isPaid = paid;
+    order.paidAt = paid ? order.paidAt || new Date() : null;
+    if (paid && order.status === 'pending') {
+      order.status = 'processing';
+    }
+
+    await order.save();
+
+    const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
+    return ok(res, 200, {
+      message: paid ? 'Order marked as paid' : 'Order marked as unpaid',
+      data: { order: populated }
+    });
+  } catch (error) {
+    console.error('Admin mark paid error:', error);
+    return fail(res, 500, error.message || 'Failed to update payment');
   }
 });
 

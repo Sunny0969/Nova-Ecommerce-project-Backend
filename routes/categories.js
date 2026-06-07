@@ -8,6 +8,7 @@ const Product = require('../models/Product');
 const requireAdmin = require('../middleware/requireAdmin');
 const { adminOrStaffPermission } = require('../middleware/staffAuth');
 const { uploadImageBuffer, deleteByPublicId } = require('../lib/cloudinary');
+const { publishedProductCountStages } = require('../lib/syncCategoryVisibility');
 
 const router = express.Router();
 
@@ -46,26 +47,16 @@ async function slugExists(slug, excludeId) {
 }
 
 /**
- * GET /api/categories — active categories with product counts
+ * GET /api/categories — active categories with published product counts (storefront)
  */
 router.get('/', async (req, res) => {
   try {
     const productColl = Product.collection.name;
     const rows = await Category.aggregate([
       { $match: { isActive: true } },
-      { $sort: { displayOrder: 1, name: 1 } },
-      {
-        $lookup: {
-          from: productColl,
-          localField: '_id',
-          foreignField: 'category',
-          as: 'products'
-        }
-      },
-      {
-        $addFields: { productCount: { $size: '$products' } }
-      },
-      { $project: { products: 0 } }
+      ...publishedProductCountStages(productColl),
+      { $match: { productCount: { $gt: 0 } } },
+      { $sort: { displayOrder: 1, name: 1 } }
     ]);
 
     ok(res, rows);

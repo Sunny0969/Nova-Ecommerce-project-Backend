@@ -1,5 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const multer = require('multer');
 const router = express.Router();
 
 const Order = require('../models/Order');
@@ -11,6 +12,27 @@ const {
   finalizeOrderFromPaymentIntent,
   ORDER_POPULATE
 } = require('../services/orderFromPaymentIntent');
+const { finalizeOrderWithManualPayment } = require('../services/orderManualPayment');
+const { isAllowedManualPaymentMethod, EASYPAISA_NUMBER } = require('../lib/paymentConfig');
+const { uploadImageBuffer, ensureConfigured } = require('../lib/cloudinary');
+const { hydratePaymentProof } = require('../utils/paymentProof');
+
+const proofUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 3 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype || !file.mimetype.startsWith('image/')) {
+      cb(new Error('Only image uploads are allowed'));
+      return;
+    }
+    cb(null, true);
+  }
+});
+
+function isBankTransferOrder(order) {
+  const id = order.paymentResult?.id || '';
+  return id === 'bank_transfer' || /easypaisa|bank transfer/i.test(String(order.paymentMethod || ''));
+}
 
 function clientIpFromReq(req) {
   const xff = req.headers['x-forwarded-for'];
@@ -129,6 +151,176 @@ router.post('/confirm', async (req, res) => {
 
     console.error('Confirm order error:', error);
     return fail(res, 500, error.message || 'Failed to confirm order');
+  }
+});
+
+async function handleManualPlaceOrder(req, res) {
+  const deliveryOption = ['standard', 'express', 'nextday'].includes(req.body.deliveryOption)
+    ? req.body.deliveryOption
+    : 'standard';
+  const paymentMethod = String(req.body.paymentMethod || '').trim();
+  const shippingAddress =
+    req.body.shippingAddress && typeof req.body.shippingAddress === 'object'
+      ? req.body.shippingAddress
+      : {};
+
+  if (!isAllowedManualPaymentMethod(paymentMethod)) {
+    return fail(res, 400, 'Choose cash on delivery or bank transfer (Easypaisa)');
+  }
+
+  const transactionId =
+    req.body.transactionId != null ? String(req.body.transactionId).trim().slice(0, 120) : '';
+
+  let result;
+  try {
+    result = await finalizeOrderWithManualPayment(
+      req.authUserId,
+      deliveryOption,
+      shippingAddress,
+      paymentMethod,
+      clientIpFromReq(req),
+      paymentMethod === 'bank_transfer' ? { transactionId } : {}
+    );
+  } catch (e) {
+    if (e.code === 'EMPTY_CART') {
+      return fail(res, 400, 'Cart is empty');
+    }
+    if (e.code === 'NO_STOCK' || e.code === 'STOCK') {
+      return fail(res, 409, e.message);
+    }
+    if (e.code === 'PRODUCT_GONE' || e.code === 'BAD_QTY' || e.code === 'BAD_PRICE') {
+      return fail(res, 400, e.message);
+    }
+    throw e;
+  }
+
+  if (req.session) req.session.cart = [];
+
+  return ok(res, 201, {
+    message: 'Order placed successfully',
+    data: {
+      order: result.populated,
+      paymentInstructions:
+        paymentMethod === 'bank_transfer'
+          ? { easypaisa: EASYPAISA_NUMBER, note: 'Send payment via Easypaisa to this number.' }
+          : { note: 'Pay with cash when your order is delivered.' }
+    }
+  });
+}
+
+/**
+ * POST /api/orders/place — COD or Easypaisa bank transfer (no Stripe)
+ * POST /api/orders/create — alias for older clients
+ */
+async function placeOrderRoute(req, res) {
+  try {
+    return await handleManualPlaceOrder(req, res);
+  } catch (error) {
+    if (error.name === 'ValidationError') {
+      const errors = Object.fromEntries(
+        Object.values(error.errors || {}).map((e) => [e.path || 'field', e.message])
+      );
+      return fail(res, 400, 'Invalid order data', errors);
+    }
+    console.error('Place order error:', error);
+    return fail(res, 500, error.message || 'Failed to place order');
+  }
+}
+
+router.post('/place', placeOrderRoute);
+router.post('/create', placeOrderRoute);
+
+/**
+ * POST /api/orders/:id/payment-proof — bank transfer screenshot + transaction ID
+ */
+router.post('/:id/payment-proof', proofUpload.single('proof'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return fail(res, 400, 'Invalid order id');
+    }
+
+    const order = await Order.findById(id);
+    if (!order) {
+      return fail(res, 404, 'Order not found');
+    }
+
+    if (String(order.user) !== String(req.authUserId)) {
+      return fail(res, 403, 'Not allowed to update this order');
+    }
+
+    if (!isBankTransferOrder(order)) {
+      return fail(res, 400, 'Payment proof only applies to bank transfer orders');
+    }
+
+    const txnId =
+      req.body.transactionId != null
+        ? String(req.body.transactionId).trim().slice(0, 120)
+        : order.paymentProof?.transactionId || '';
+
+    let imageUrl = order.paymentProof?.imageUrl || '';
+    let imagePublicId = order.paymentProof?.imagePublicId || '';
+
+    if (req.file) {
+      if (!ensureConfigured()) {
+        return fail(
+          res,
+          503,
+          'Screenshot upload is not configured. Enter your transaction ID or contact support.'
+        );
+      }
+      try {
+        const uploaded = await uploadImageBuffer(req.file.buffer, {
+          folder: 'nova-shop/payment-proofs'
+        });
+        imageUrl = uploaded.url;
+        imagePublicId = uploaded.public_id;
+      } catch (upErr) {
+        console.error('Payment proof upload error:', upErr);
+        return fail(res, 500, upErr.message || 'Could not upload screenshot');
+      }
+    }
+
+    if (!txnId && !imageUrl) {
+      return fail(res, 400, 'Enter a transaction ID or upload a payment screenshot');
+    }
+
+    order.paymentProof = {
+      transactionId: txnId,
+      imageUrl,
+      imagePublicId,
+      submittedAt: new Date()
+    };
+
+    const noteParts = [
+      `Easypaisa: ${EASYPAISA_NUMBER}.`,
+      txnId ? `Transaction ID: ${txnId}.` : '',
+      imageUrl ? 'Payment screenshot on file.' : '',
+      'Awaiting payment verification.'
+    ].filter(Boolean);
+    order.notes = noteParts.join(' ');
+
+    await order.save();
+
+    const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
+    const user = await User.findById(req.authUserId).select('name email');
+    try {
+      const { sendNewOrderAdminEmail } = require('../lib/email');
+      await sendNewOrderAdminEmail(populated, user);
+    } catch (mailErr) {
+      console.error('Admin payment-proof email failed:', mailErr);
+    }
+
+    return ok(res, 200, {
+      message: 'Payment proof saved',
+      data: { order: populated }
+    });
+  } catch (error) {
+    if (error.message === 'Only image uploads are allowed') {
+      return fail(res, 400, error.message);
+    }
+    console.error('Payment proof error:', error);
+    return fail(res, 500, error.message || 'Failed to save payment proof');
   }
 });
 
@@ -270,7 +462,7 @@ router.get('/:id', async (req, res) => {
       return fail(res, 400, 'Invalid order id');
     }
 
-    if (['create', 'confirm', 'my-orders', 'cancel'].includes(id)) {
+    if (['create', 'confirm', 'place', 'my-orders', 'cancel'].includes(id)) {
       return fail(res, 400, 'Invalid order id');
     }
 
@@ -283,6 +475,8 @@ router.get('/:id', async (req, res) => {
     if (!(await userCanViewOrder(req, order))) {
       return fail(res, 403, 'Not allowed to view this order');
     }
+
+    hydratePaymentProof(order);
 
     res.json({ success: true, data: { order } });
   } catch (error) {

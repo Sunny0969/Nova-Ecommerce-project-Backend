@@ -137,6 +137,7 @@ app.use('/api/chatbot', require('./routes/chatbot.impl'));
 app.use('/api/staff', require('./routes/staff')); // ✅ public staff auth
 app.use('/api/blog', require('./routes/blog'));
 app.use('/api/public', require('./routes/public'));
+app.use('/api/seo', require('./routes/seo'));
 
 /* ============================
    AUTH REQUIRED ROUTES
@@ -249,6 +250,15 @@ async function startServer() {
   try {
     await mongoose.connect(MONGODB_URI, MONGOOSE_CONNECT_OPTS);
     console.log('[MongoDB] Connected');
+
+    try {
+      const Category = require('./models/Category');
+      const { ensureHomeCategories } = require('./lib/homeCategoriesSeed');
+      const { upserted } = await ensureHomeCategories(Category);
+      console.log(`[seed] Synced ${upserted} home categories (images + metadata)`);
+    } catch (seedErr) {
+      console.warn('[seed] Home categories sync skipped:', seedErr.message);
+    }
 
     const server = app.listen(PORT, HOST, () => {
       console.log(`[Server] Listening on http://${HOST}:${PORT} (${isProduction ? 'production' : 'development'})`);

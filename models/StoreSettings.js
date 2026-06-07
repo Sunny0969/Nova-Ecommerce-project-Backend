@@ -8,7 +8,7 @@ const storeSettingsSchema = new mongoose.Schema(
   {
     freeShippingMin: {
       type: Number,
-      default: 50,
+      default: 2026,
       min: 0
     },
     shippingStandard: {

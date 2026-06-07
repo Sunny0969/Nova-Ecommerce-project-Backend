@@ -5,7 +5,6 @@ const express = require('express');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const Category = require('../models/Category');
-const Coupon = require('../models/Coupon');
 const { getStoreSettings } = require('../services/storeSettings');
 
 const router = express.Router();
@@ -14,67 +13,54 @@ function ok(res, data) {
   res.json({ success: true, data });
 }
 
-function maxProductDiscountPercent(products) {
-  let maxPct = 0;
-  for (const p of products) {
-    const compare = Number(p.comparePrice);
-    const price = Number(p.price);
-    if (!Number.isFinite(compare) || !Number.isFinite(price) || compare <= price || compare <= 0) {
-      continue;
-    }
-    const pct = Math.round(((compare - price) / compare) * 100);
-    if (pct > maxPct) maxPct = pct;
-  }
-  return maxPct > 0 ? maxPct : null;
+async function getMaxPublishedProductDiscountPercent() {
+  const rows = await Product.aggregate([
+    {
+      $match: {
+        isPublished: true,
+        comparePrice: { $gt: 0 },
+        $expr: { $gt: ['$comparePrice', '$price'] }
+      }
+    },
+    {
+      $project: {
+        pct: {
+          $round: [
+            {
+              $multiply: [
+                { $divide: [{ $subtract: ['$comparePrice', '$price'] }, '$comparePrice'] },
+                100
+              ]
+            },
+            0
+          ]
+        }
+      }
+    },
+    { $group: { _id: null, maxPct: { $max: '$pct' } } }
+  ]);
+
+  const maxPct = Number(rows[0]?.maxPct);
+  return Number.isFinite(maxPct) && maxPct > 0 ? maxPct : null;
 }
 
 async function buildPromoHighlight(settings) {
-  const now = new Date();
-  const couponQuery = {
-    isActive: true,
-    $and: [
-      { $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }] },
-      {
-        $or: [
-          { maxUses: null },
-          { $expr: { $lt: ['$usedCount', '$maxUses'] } }
-        ]
-      }
-    ]
-  };
-
-  const [coupon, saleProducts] = await Promise.all([
-    Coupon.findOne(couponQuery).sort({ discountValue: -1 }).lean(),
-    Product.find({
-      isPublished: true,
-      comparePrice: { $gt: 0 }
-    })
-      .select('price comparePrice')
-      .limit(200)
-      .lean()
+  const [productPct, freeMinRaw] = await Promise.all([
+    getMaxPublishedProductDiscountPercent(),
+    Promise.resolve(Number(settings?.freeShippingMin))
   ]);
 
-  const freeMin = Number(settings?.freeShippingMin);
+  const freeMin = Number(freeMinRaw);
   const freeDeliveryNote =
     Number.isFinite(freeMin) && freeMin > 0
-      ? `Free delivery on orders above Rs ${Math.round(freeMin).toLocaleString('en-PK')}`
+      ? `Free delivery over Rs ${Math.round(freeMin).toLocaleString('en-PK')}`
       : null;
 
-  const productPct = maxProductDiscountPercent(saleProducts);
-  let pct = null;
-  let titlePrefix = 'Sale';
-
-  if (coupon?.discountType === 'percentage' && Number(coupon.discountValue) > 0) {
-    pct = Math.min(100, Math.round(Number(coupon.discountValue)));
-    titlePrefix = coupon.code ? String(coupon.code).trim() : 'Sale';
-  } else if (productPct) {
-    pct = productPct;
-  }
-
-  if (pct == null) return null;
+  if (productPct == null) return null;
 
   return {
-    title: `${titlePrefix} — Up to ${pct}% Off`,
+    maxDiscountPercent: productPct,
+    title: `Sale — Up to ${productPct}% Off`,
     subtitle: freeDeliveryNote
       ? `Limited time • ${freeDeliveryNote}`
       : 'Limited time • Best prices on Rozana'

@@ -1,5 +1,6 @@
 const express = require('express');
 const Brand = require('../models/Brand');
+const { isBlockedBrand } = require('../lib/brandFilters');
 
 const router = express.Router();
 
@@ -36,7 +37,7 @@ router.get('/popular', async (req, res) => {
       .limit(limit)
       .lean();
 
-    ok(res, rows.map(shapeBrand));
+    ok(res, rows.map(shapeBrand).filter((b) => !isBlockedBrand(b)));
   } catch (err) {
     console.error('Popular brands error:', err);
     fail(res, 500, err.message || 'Failed to load popular brands');
@@ -55,7 +56,7 @@ router.get('/', async (req, res) => {
       .sort({ displayOrder: 1, name: 1 })
       .lean();
 
-    ok(res, rows.map(shapeBrand));
+    ok(res, rows.map(shapeBrand).filter((b) => !isBlockedBrand(b)));
   } catch (err) {
     console.error('List brands error:', err);
     fail(res, 500, err.message || 'Failed to load brands');

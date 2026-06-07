@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const multer = require('multer');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
+const Brand = require('../models/Brand');
 const Review = require('../models/Review');
 const StockNotification = require('../models/StockNotification');
 const Order = require('../models/Order');
@@ -18,6 +19,7 @@ const {
   diffPublicIdsToRemove,
   mergeVariantOptionUploads
 } = require('../lib/variantAxes');
+const { productNameQueryForBrand } = require('../lib/brandFilters');
 const { queueProductEmbeddingUpdate, hybridSearch, suggestQueries } = require('../services/aiSearch');
 const { logSearchQuery, logSearchClick, getTrendingSearches } = require('../services/searchAnalytics');
 const { saleProductMatchFilter } = require('../lib/productSale');
@@ -60,6 +62,31 @@ function isValidObjectId(id) {
 
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** List/search filter — regex on name, slug, etc. (no MongoDB text index required). */
+function productSearchFilter(q) {
+  const raw = String(q || '').trim();
+  if (!raw) return null;
+
+  const terms = raw.split(/\s+/).filter(Boolean).slice(0, 8);
+  if (!terms.length) return null;
+
+  const fieldMatch = (term) => {
+    const rx = new RegExp(escapeRegex(term), 'i');
+    return {
+      $or: [
+        { name: rx },
+        { slug: rx },
+        { shortDescription: rx },
+        { sku: rx },
+        { tags: rx }
+      ]
+    };
+  };
+
+  if (terms.length === 1) return fieldMatch(terms[0]);
+  return { $and: terms.map(fieldMatch) };
 }
 
 function shapeProductDoc(doc) {
@@ -191,7 +218,8 @@ async function buildListFilter(query) {
 
   const q = String(search || '').trim();
   if (q) {
-    and.push({ $text: { $search: q } });
+    const searchFilter = productSearchFilter(q);
+    if (searchFilter) and.push(searchFilter);
   }
 
   const rawCats = category;
@@ -228,17 +256,32 @@ async function buildListFilter(query) {
     } else {
       and.push({ category: { $in: ids } });
     }
-    }
+  }
 
-    const mp =
-      minPrice !== undefined && minPrice !== '' ? parseFloat(minPrice) : NaN;
-    const xp =
-      maxPrice !== undefined && maxPrice !== '' ? parseFloat(maxPrice) : NaN;
-    if (Number.isFinite(mp) || Number.isFinite(xp)) {
+  const mp =
+    minPrice !== undefined && minPrice !== '' ? parseFloat(minPrice) : NaN;
+  const xp =
+    maxPrice !== undefined && maxPrice !== '' ? parseFloat(maxPrice) : NaN;
+  if (Number.isFinite(mp) || Number.isFinite(xp)) {
     const range = {};
     if (Number.isFinite(mp)) range.$gte = mp;
     if (Number.isFinite(xp)) range.$lte = xp;
     and.push({ price: range });
+  }
+
+  const brandSlug = String(query.brand || '')
+    .trim()
+    .toLowerCase();
+  if (brandSlug) {
+    const brandDoc = await Brand.findOne({ slug: brandSlug, isActive: true })
+      .select('name')
+      .lean();
+    if (!brandDoc) {
+      and.push({ _id: { $in: [] } });
+    } else {
+      const brandNameFilter = productNameQueryForBrand(brandDoc.name);
+      if (brandNameFilter) and.push(brandNameFilter);
+    }
   }
 
   const r = rating !== undefined && rating !== '' ? parseFloat(rating) : NaN;
@@ -287,7 +330,7 @@ function buildListSort(sortParam) {
 }
 
 /**
- * GET /api/products — paginated list + filters + $text search
+ * GET /api/products — paginated list + filters + name search
  */
 router.get('/', async (req, res) => {
   try {
@@ -296,19 +339,7 @@ router.get('/', async (req, res) => {
     const skip = (page - 1) * limit;
     const sort = buildListSort(req.query.sort);
 
-    let filter;
-    try {
-      filter = await buildListFilter(req.query);
-    } catch (e) {
-      if (
-        e.code === 28 ||
-        (e.message &&
-          (e.message.includes('$text') || e.message.includes('text index')))
-      ) {
-        return fail(res, 400, 'Invalid search query');
-      }
-      throw e;
-    }
+    const filter = await buildListFilter(req.query);
 
     const [raw, totalCount] = await Promise.all([
       Product.find(filter)
@@ -331,6 +362,109 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('Get products error:', error);
     fail(res, 500, error.message || 'Failed to fetch products');
+  }
+});
+
+/**
+ * GET /api/products/home-category-sales — recent categories with on-sale products (homepage rows)
+ */
+router.get('/home-category-sales', async (req, res) => {
+  try {
+    const categoryLimit = Math.min(10, Math.max(1, parseInt(req.query.categories, 10) || 5));
+    const productLimit = Math.min(20, Math.max(1, parseInt(req.query.productsPerCategory, 10) || 12));
+
+    const categoryRows = await Product.aggregate([
+      { $match: saleProductMatchFilter() },
+      {
+        $group: {
+          _id: '$category',
+          saleCount: { $sum: 1 },
+          latestSaleAt: { $max: '$createdAt' }
+        }
+      },
+      {
+        $lookup: {
+          from: 'categories',
+          localField: '_id',
+          foreignField: '_id',
+          as: '_cat'
+        }
+      },
+      { $unwind: '$_cat' },
+      { $match: { '_cat.isActive': { $ne: false } } },
+      { $sort: { '_cat.updatedAt': -1, latestSaleAt: -1 } },
+      { $limit: categoryLimit },
+      {
+        $project: {
+          categoryId: '$_id',
+          name: '$_cat.name',
+          slug: '$_cat.slug',
+          saleCount: 1
+        }
+      }
+    ]);
+
+    if (!categoryRows.length) {
+      return ok(res, { rows: [] });
+    }
+
+    const rows = (
+      await Promise.all(
+        categoryRows.map(async (row) => {
+          const raw = await Product.aggregate([
+            {
+              $match: {
+                ...saleProductMatchFilter(),
+                category: row.categoryId
+              }
+            },
+            {
+              $addFields: {
+                _saleDiscountPct: {
+                  $multiply: [
+                    {
+                      $divide: [{ $subtract: ['$comparePrice', '$price'] }, '$comparePrice']
+                    },
+                    100
+                  ]
+                }
+              }
+            },
+            { $sort: { _saleDiscountPct: -1, createdAt: -1 } },
+            { $limit: productLimit },
+            {
+              $lookup: {
+                from: 'categories',
+                localField: 'category',
+                foreignField: '_id',
+                as: '_categoryPop'
+              }
+            },
+            {
+              $addFields: {
+                category: { $arrayElemAt: ['$_categoryPop', 0] }
+              }
+            },
+            { $project: { _categoryPop: 0, _saleDiscountPct: 0 } }
+          ]);
+
+          return {
+            category: {
+              _id: row.categoryId,
+              name: row.name,
+              slug: row.slug,
+              saleCount: row.saleCount
+            },
+            products: raw.map(shapeProductDoc)
+          };
+        })
+      )
+    ).filter((row) => row.products.length > 0);
+
+    ok(res, { rows });
+  } catch (error) {
+    console.error('Home category sales error:', error);
+    fail(res, 500, error.message || 'Failed to fetch category sale rows');
   }
 });
 
