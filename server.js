@@ -17,8 +17,15 @@ const compression = require('compression');
 const app = express();
 // Port 5000 is often blocked/reserved on Windows — use 5001 locally. Render sets PORT (e.g. 10000).
 const PORT = Number(process.env.PORT) || 5001;
+const onRailway = Boolean(
+  process.env.RAILWAY_ENVIRONMENT ||
+    process.env.RAILWAY_PUBLIC_DOMAIN ||
+    process.env.RAILWAY_STATIC_URL
+);
 const isProduction =
-  process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+  process.env.NODE_ENV === 'production' ||
+  process.env.RENDER === 'true' ||
+  onRailway;
 const HOST = process.env.HOST || (isProduction ? '0.0.0.0' : '127.0.0.1');
 
 const MONGODB_URI = process.env.MONGODB_URI;
@@ -42,46 +49,54 @@ const devLocal = [
 ];
 
 function corsOriginForRequest() {
-  if (process.env.NODE_ENV !== 'production') {
-    const one = process.env.FRONTEND_URL || 'http://localhost:3000';
-    return [one, ...devLocal];
-  }
   const fromEnv = (process.env.FRONTEND_URL || '')
     .split(',')
     .map((s) => s.trim().replace(/\/$/, ''))
     .filter(Boolean);
   const defaults = [
     'https://souvenirhandicraft.com',
-    'https://www.souvenirhandicraft.com'
+    'https://www.souvenirhandicraft.com',
+    'https://bazaar-pk.com',
+    'https://www.bazaar-pk.com'
   ];
-  return [...new Set([...defaults, ...fromEnv])];
+  const merged = [...new Set([...defaults, ...fromEnv])];
+  if (process.env.NODE_ENV !== 'production' && !onRailway) {
+    return [...merged, ...devLocal];
+  }
+  return merged;
 }
 
 const corsOrigins = corsOriginForRequest();
 
+function isAllowedCorsOrigin(origin) {
+  if (!origin) return true;
+  const norm = origin.replace(/\/$/, '');
+  if (corsOrigins.some((o) => typeof o === 'string' && o.replace(/\/$/, '') === norm)) {
+    return true;
+  }
+  for (const o of corsOrigins) {
+    if (o instanceof RegExp && o.test(origin)) return true;
+  }
+  try {
+    const h = new URL(origin).hostname;
+    if (h === 'hostingersite.com' || h.endsWith('.hostingersite.com')) return true;
+    if (h === 'bazaar-pk.com' || h.endsWith('.bazaar-pk.com')) return true;
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 app.use(
   cors({
     credentials: true,
-    origin:
-      process.env.NODE_ENV === 'production'
-        ? (origin, callback) => {
-            if (!origin) return callback(null, true);
-            const norm = origin.replace(/\/$/, '');
-            const allowed = corsOrigins.some(
-              (o) => o.replace(/\/$/, '') === norm
-            );
-            if (allowed) return callback(null, true);
-
-            try {
-              const h = new URL(origin).hostname;
-              if (h === 'hostingersite.com' || h.endsWith('.hostingersite.com')) {
-                return callback(null, true);
-              }
-            } catch {}
-
-            return callback(null, false);
-          }
-        : corsOrigins
+    origin(origin, callback) {
+      if (isAllowedCorsOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    }
   })
 );
 
@@ -262,6 +277,9 @@ async function startServer() {
 
     const server = app.listen(PORT, HOST, () => {
       console.log(`[Server] Listening on http://${HOST}:${PORT} (${isProduction ? 'production' : 'development'})`);
+      if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+        console.log(`[Server] Railway public URL: https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
+      }
     });
 
     server.on('error', (err) => {
