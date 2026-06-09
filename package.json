@@ -27,6 +27,7 @@
     "resync:slugs": "node scripts/resyncProductSlugsFromNames.js",
     "create:admin": "node scripts/createAdminUser.js",
     "test:email": "node scripts/testOrderEmail.js",
+    "check:resend": "node scripts/checkResendSetup.js",
     "sitemap:generate": "node scripts/generateSitemap.js"
   },
   "keywords": [
