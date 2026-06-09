@@ -238,14 +238,22 @@ function sendHealth(res) {
 app.get('/', (req, res) => sendHealth(res));
 app.head('/', (req, res) => res.sendStatus(200));
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
   const { isEmailConfigured, getAdminEmail } = require('./lib/email');
+  let pendingOrderEmails = null;
+  try {
+    const PendingOrderEmail = require('./models/PendingOrderEmail');
+    pendingOrderEmails = await PendingOrderEmail.countDocuments({ status: 'pending' });
+  } catch {
+    pendingOrderEmails = null;
+  }
   res.json({
     status: 'OK',
     message: 'Bazaar API is running',
     email: {
       configured: isEmailConfigured(),
-      adminRecipient: Boolean(getAdminEmail())
+      adminRecipient: Boolean(getAdminEmail()),
+      pendingOrderEmails
     }
   });
 });
@@ -294,7 +302,17 @@ async function startServer() {
     }
 
     const { verifyEmailOnStartup } = require('./lib/email');
-    await verifyEmailOnStartup();
+    void Promise.race([
+      verifyEmailOnStartup(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('SMTP verify timeout')), 12_000)
+      )
+    ]).catch((err) => {
+      console.warn('[email] Startup verify skipped:', err.message);
+    });
+
+    const { startOrderEmailRetryWorker } = require('./services/orderEmailDelivery');
+    startOrderEmailRetryWorker();
 
     const server = app.listen(PORT, HOST, () => {
       console.log(`[Server] Listening on http://${HOST}:${PORT} (${isProduction ? 'production' : 'development'})`);
