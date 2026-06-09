@@ -162,7 +162,8 @@ async function retryPendingOrderEmails() {
 /** Queue emails for recent orders that never got a sent notification. */
 async function backfillMissedOrderEmails() {
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const notified = await PendingOrderEmail.find({ status: 'sent' }).distinct('order');
+  const notifiedRows = await PendingOrderEmail.find({ status: 'sent' }).select('order').lean();
+  const notified = notifiedRows.map((row) => row.order);
   const recent = await Order.find({
     createdAt: { $gte: since },
     _id: { $nin: notified }
