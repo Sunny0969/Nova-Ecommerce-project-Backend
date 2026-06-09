@@ -239,7 +239,7 @@ app.get('/', (req, res) => sendHealth(res));
 app.head('/', (req, res) => res.sendStatus(200));
 
 app.get('/api/health', async (req, res) => {
-  const { isEmailConfigured, getAdminEmail } = require('./lib/email');
+  const { isEmailConfigured, getAdminEmail, getEmailProvider } = require('./lib/email');
   let pendingOrderEmails = null;
   try {
     const PendingOrderEmail = require('./models/PendingOrderEmail');
@@ -252,6 +252,7 @@ app.get('/api/health', async (req, res) => {
     message: 'Bazaar API is running',
     email: {
       configured: isEmailConfigured(),
+      provider: getEmailProvider(),
       adminRecipient: Boolean(getAdminEmail()),
       pendingOrderEmails
     }

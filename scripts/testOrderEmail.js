@@ -1,17 +1,20 @@
 /**
  * Test customer + admin order notification emails.
  * Usage: node scripts/testOrderEmail.js
- * Requires EMAIL_HOST, EMAIL_USER, EMAIL_PASS (Gmail App Password) in backend/.env
+ * Local: EMAIL_HOST, EMAIL_USER, EMAIL_PASS in backend/.env
+ * Railway/production: RESEND_API_KEY + EMAIL_FROM
  */
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { verifyEmailOnStartup, sendMail } = require('../lib/email');
+const { verifyEmailOnStartup, sendMail, getEmailProvider } = require('../lib/email');
 
 async function main() {
   const check = await verifyEmailOnStartup();
   if (!check.ok) {
     process.exit(1);
   }
+
+  console.log('Email provider:', getEmailProvider());
 
   const admin = process.env.ADMIN_EMAIL || process.env.EMAIL_USER;
   const customer = process.argv[2] || admin;
