@@ -121,19 +121,18 @@ async function enqueueOrderEmailsFromResult(result) {
   const orderId = result.populated._id;
   const shippingSnapshot = shippingSnapshotFromResult(result);
 
-  await PendingOrderEmail.findOneAndUpdate(
-    { order: orderId },
-    {
-      $setOnInsert: {
-        order: orderId,
-        status: 'pending',
-        attempts: 0,
-        shippingSnapshot
-      },
-      ...(shippingSnapshot ? { $set: { shippingSnapshot } } : {})
-    },
-    { upsert: true, new: true }
-  );
+  const update = {
+    $setOnInsert: {
+      order: orderId,
+      status: 'pending',
+      attempts: 0
+    }
+  };
+  if (shippingSnapshot) {
+    update.$set = { shippingSnapshot };
+  }
+
+  await PendingOrderEmail.findOneAndUpdate({ order: orderId }, update, { upsert: true, new: true });
 
   void deliverPendingOrderEmail(orderId);
 }
