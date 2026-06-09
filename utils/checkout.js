@@ -3,10 +3,11 @@ const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const { validateCouponForCart } = require('./cartCoupon');
 const { getStoreSettings } = require('../services/storeSettings');
+const { computeCartWeightKg, calculateWeightBasedShipping } = require('../lib/shippingWeight');
 
 const ITEMS_POPULATE = {
   path: 'items.product',
-  select: 'name price stock slug images category isPublished',
+  select: 'name price stock slug images category isPublished weight weightKg',
   populate: { path: 'category', select: 'name slug' }
 };
 
@@ -18,20 +19,33 @@ function round2(n) {
  * @param {number} itemsPrice — pre-discount items subtotal (used for free-shipping threshold)
  * @param {string} deliveryOption
  * @param {object} settings — from getStoreSettings()
+ * @param {number|null} [cartWeightKg] — total cart weight for weight-based standard shipping
  */
-function calculateShipping(itemsPrice, deliveryOption, settings) {
-  const threshold = Number(settings?.freeShippingMin);
-  const t = Number.isFinite(threshold) && threshold >= 0 ? threshold : 50;
+function calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg = null) {
   const d = deliveryOption || 'standard';
+  let shipping = 0;
   if (d === 'express') {
-    if (itemsPrice >= t) return 0;
-    return round2(Number(settings?.shippingExpress) ?? 5.99);
+    const rate = Number(settings?.shippingExpress);
+    shipping = round2(Number.isFinite(rate) && rate >= 0 ? rate : 499);
+  } else if (d === 'nextday') {
+    const rate = Number(settings?.shippingNextDay);
+    shipping = round2(Number.isFinite(rate) && rate >= 0 ? rate : 599);
+  } else if (settings?.weightShippingEnabled !== false && cartWeightKg != null) {
+    shipping = calculateWeightBasedShipping(cartWeightKg, settings);
+  } else {
+    shipping = round2(Number(settings?.shippingStandard) ?? 299);
   }
-  if (d === 'nextday') {
-    if (itemsPrice >= t) return 0;
-    return round2(Number(settings?.shippingNextDay) ?? 9.99);
+
+  const freeMin = Number(settings?.freeShippingMin);
+  if (
+    d === 'standard' &&
+    Number.isFinite(freeMin) &&
+    freeMin > 0 &&
+    Number(itemsPrice) >= freeMin
+  ) {
+    return 0;
   }
-  return round2(Number(settings?.shippingStandard) ?? 299);
+  return shipping;
 }
 
 /** Tax on merchandise after discount (not on shipping). */
@@ -42,11 +56,12 @@ function calculateTaxPrice(subtotalAfterDiscount, settings) {
 
 /**
  * Preview totals for cart UI / checkout sidebar (must match buildCheckoutSnapshot).
+ * @param {number|null} [cartWeightKg]
  */
-function computeTotalsPreview(itemsPrice, discountAmount, deliveryOption, settings) {
+function computeTotalsPreview(itemsPrice, discountAmount, deliveryOption, settings, cartWeightKg = null) {
   const disc = Math.min(Number(discountAmount) || 0, itemsPrice);
   const subAfterDisc = round2(Math.max(0, itemsPrice - disc));
-  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings);
+  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg);
   const taxPrice = calculateTaxPrice(subAfterDisc, settings);
   const totalPrice = round2(Math.max(0, subAfterDisc + shippingPrice + taxPrice));
   return {
@@ -55,7 +70,8 @@ function computeTotalsPreview(itemsPrice, discountAmount, deliveryOption, settin
     subtotalAfterDiscount: subAfterDisc,
     shippingPrice,
     taxPrice,
-    totalPrice
+    totalPrice,
+    cartWeightKg: cartWeightKg != null ? cartWeightKg : undefined
   };
 }
 
@@ -158,7 +174,8 @@ async function buildCheckoutSnapshot(userId, deliveryOption = 'standard') {
 
   const totals = cart.calculateTotals();
   const discountAmount = Number(totals.discountAmount) || 0;
-  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings);
+  const cartWeightKg = computeCartWeightKg(cart.items, settings);
+  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg);
   const subAfterDisc = round2(Math.max(0, itemsPrice - discountAmount));
   const taxPrice = calculateTaxPrice(subAfterDisc, settings);
   const totalPrice = round2(Math.max(0, subAfterDisc + shippingPrice + taxPrice));
@@ -177,10 +194,95 @@ async function buildCheckoutSnapshot(userId, deliveryOption = 'standard') {
   };
 }
 
+/**
+ * Build checkout snapshot from guest cart lines (no server cart / login).
+ * @param {Array<{ productId: string, quantity: number, price?: number }>} guestItems
+ */
+async function buildGuestCheckoutSnapshot(guestItems, deliveryOption = 'standard') {
+  const settings = await getStoreSettings();
+  if (!Array.isArray(guestItems) || !guestItems.length) {
+    const err = new Error('Cart is empty');
+    err.code = 'EMPTY_CART';
+    throw err;
+  }
+
+  const productIds = guestItems.map((line) => line.productId).filter(Boolean);
+  const products = await Product.find({ _id: { $in: productIds } }).lean();
+  const byId = Object.fromEntries(products.map((p) => [String(p._id), p]));
+
+  const orderLines = [];
+  let itemsPrice = 0;
+
+  for (const line of guestItems) {
+    const idStr = String(line.productId || '');
+    const p = byId[idStr];
+    if (!p || !p.isPublished) {
+      const err = new Error(`Product no longer available: ${idStr}`);
+      err.code = 'PRODUCT_GONE';
+      throw err;
+    }
+
+    const qty = Math.floor(Number(line.quantity));
+    if (!Number.isInteger(qty) || qty < 1) {
+      const err = new Error('Invalid quantity in cart');
+      err.code = 'BAD_QTY';
+      throw err;
+    }
+
+    if (p.stock < qty) {
+      const err = new Error(`Insufficient stock for ${p.name}`);
+      err.code = 'NO_STOCK';
+      err.details = { available: p.stock, requested: qty };
+      throw err;
+    }
+
+    const linePrice =
+      line.price != null && line.price >= 0 ? Number(line.price) : Number(p.price);
+    if (!Number.isFinite(linePrice) || linePrice < 0) {
+      const err = new Error('Invalid product price');
+      err.code = 'BAD_PRICE';
+      throw err;
+    }
+
+    itemsPrice += linePrice * qty;
+    orderLines.push({
+      product: p._id,
+      quantity: qty,
+      name: p.name,
+      price: linePrice,
+      image: productImageUrl(p)
+    });
+  }
+
+  const discountAmount = 0;
+  const guestLines = guestItems.map((line) => {
+    const idStr = String(line.productId || '');
+    const p = byId[idStr];
+    return { product: p, quantity: Math.floor(Number(line.quantity)) };
+  });
+  const cartWeightKg = computeCartWeightKg(guestLines, settings);
+  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg);
+  const subAfterDisc = round2(Math.max(0, itemsPrice - discountAmount));
+  const taxPrice = calculateTaxPrice(subAfterDisc, settings);
+  const totalPrice = round2(Math.max(0, subAfterDisc + shippingPrice + taxPrice));
+
+  return {
+    orderLines,
+    itemsPrice,
+    taxPrice,
+    shippingPrice,
+    discountAmount,
+    totalPrice,
+    couponId: null
+  };
+}
+
 module.exports = {
   buildCheckoutSnapshot,
+  buildGuestCheckoutSnapshot,
   calculateShipping,
   calculateTaxPrice,
   computeTotalsPreview,
-  round2
+  round2,
+  computeCartWeightKg
 };

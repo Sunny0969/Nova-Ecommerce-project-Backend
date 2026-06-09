@@ -6,7 +6,8 @@ const Coupon = require('../models/Coupon');
 const User = require('../models/User');
 const FraudLog = require('../models/FraudLog');
 const Blocklist = require('../models/Blocklist');
-const { buildCheckoutSnapshot } = require('../utils/checkout');
+const { buildCheckoutSnapshot, buildGuestCheckoutSnapshot } = require('../utils/checkout');
+const { resolveGuestCheckoutUser } = require('../lib/guestCheckoutUser');
 const { getStripe } = require('../lib/stripeClient');
 const {
   analyzeOrderRisk,
@@ -14,7 +15,8 @@ const {
   extractCardFingerprint
 } = require('./fraudDetection');
 const {
-  sendOrderConfirmationEmail,
+  sendOrderPlacedEmails,
+  sendNewOrderAdminEmail,
   sendFraudFlaggedAdminEmail,
   sendOrderHeldForFraudReviewEmail
 } = require('../lib/email');
@@ -101,6 +103,11 @@ async function buildPaymentIntentParams(userId, deliveryOption, shippingAddress)
   const amountCents = Math.round(snapshot.totalPrice * 100);
 
   if (currency === 'usd' && amountCents < 50) {
+    const err = new Error('Order total is below the minimum charge amount');
+    err.code = 'MIN_AMOUNT';
+    throw err;
+  }
+  if (currency === 'pkr' && amountCents < 100) {
     const err = new Error('Order total is below the minimum charge amount');
     err.code = 'MIN_AMOUNT';
     throw err;
@@ -382,25 +389,247 @@ async function finalizeOrderFromPaymentIntent(pi, options = {}) {
     });
 
     const user = await User.findById(userId).select('name email');
-    if (user?.email) {
-      try {
-        if (orderStatus === 'flagged') {
-          await sendOrderHeldForFraudReviewEmail(user, populated);
-          const adminTo = process.env.ADMIN_EMAIL;
-          if (adminTo) {
-            await sendFraudFlaggedAdminEmail(adminTo, {
-              orderId: String(order._id),
-              riskScore: fraudResult.score,
-              factors: fraudResult.factors,
-              userEmail: user.email
-            });
-          }
-        } else {
-          await sendOrderConfirmationEmail(user, populated);
+    const orderShipAddr = order.shippingAddress || {};
+    try {
+      if (orderStatus === 'flagged') {
+        if (user?.email || orderShipAddr.email) {
+          await sendOrderHeldForFraudReviewEmail(
+            user || { name: orderShipAddr.firstName, email: orderShipAddr.email },
+            populated
+          );
         }
-      } catch (mailErr) {
-        console.error('Order / fraud notification email failed:', mailErr);
+        const adminTo = process.env.ADMIN_EMAIL;
+        if (adminTo) {
+          await sendFraudFlaggedAdminEmail(adminTo, {
+            orderId: String(order._id),
+            riskScore: fraudResult.score,
+            factors: fraudResult.factors,
+            userEmail: orderShipAddr.email || user?.email || ''
+          });
+          await sendNewOrderAdminEmail(populated, user, orderShipAddr);
+        }
+      } else {
+        await sendOrderPlacedEmails(populated, user, orderShipAddr);
       }
+    } catch (mailErr) {
+      console.error('Order / fraud notification email failed:', mailErr);
+    }
+
+    return { order, populated, duplicate: false };
+  } catch (err) {
+    for (const d of decremented.reverse()) {
+      try {
+        await incrementStockRollback(d.productId, d.qty);
+      } catch (rollbackErr) {
+        console.error('Stock rollback error:', rollbackErr);
+      }
+    }
+    throw err;
+  }
+}
+
+function normalizeGuestItems(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((line) => ({
+      productId: String(line.productId || line.product || '').trim(),
+      quantity: Math.max(1, Math.floor(Number(line.quantity) || 1)),
+      price: line.price != null ? Number(line.price) : undefined
+    }))
+    .filter((line) => line.productId);
+}
+
+/**
+ * Guest checkout — PaymentIntent from browser cart (no JWT).
+ */
+async function buildGuestPaymentIntentParams(guestItems, deliveryOption, shippingAddress) {
+  const stripe = getStripe();
+  if (!stripe) {
+    const err = new Error('Stripe is not configured');
+    err.code = 'NO_STRIPE';
+    throw err;
+  }
+
+  const items = normalizeGuestItems(guestItems);
+  if (!items.length) {
+    const err = new Error('Cart is empty');
+    err.code = 'EMPTY_CART';
+    throw err;
+  }
+
+  let snapshot;
+  try {
+    snapshot = await buildGuestCheckoutSnapshot(items, deliveryOption);
+  } catch (e) {
+    if (e.code) throw e;
+    throw e;
+  }
+
+  const currency = (process.env.STRIPE_CURRENCY || 'usd').toLowerCase();
+  const amountCents = Math.round(snapshot.totalPrice * 100);
+
+  if (currency === 'usd' && amountCents < 50) {
+    const err = new Error('Order total is below the minimum charge amount');
+    err.code = 'MIN_AMOUNT';
+    throw err;
+  }
+  if (currency === 'pkr' && amountCents < 100) {
+    const err = new Error('Order total is below the minimum charge amount');
+    err.code = 'MIN_AMOUNT';
+    throw err;
+  }
+  if (amountCents < 1) {
+    const err = new Error('Invalid order total');
+    err.code = 'BAD_TOTAL';
+    throw err;
+  }
+
+  const metadata = {
+    guestCheckout: '1',
+    deliveryOption: deliveryOption || 'standard'
+  };
+
+  if (shippingAddress && typeof shippingAddress === 'object') {
+    const json = JSON.stringify(shippingAddress);
+    if (json.length <= 490) {
+      metadata.shipping_json = json;
+    }
+  }
+
+  const paymentIntent = await stripe.paymentIntents.create({
+    amount: amountCents,
+    currency,
+    metadata,
+    payment_method_types: ['card']
+  });
+
+  return {
+    paymentIntent,
+    amountCents,
+    currency,
+    snapshotSummary: {
+      totalPrice: snapshot.totalPrice,
+      itemsPrice: snapshot.itemsPrice,
+      shippingPrice: snapshot.shippingPrice,
+      taxPrice: snapshot.taxPrice,
+      discountAmount: snapshot.discountAmount
+    }
+  };
+}
+
+/**
+ * Finalize guest order after Stripe payment (client confirm).
+ */
+async function finalizeGuestStripeOrder(
+  paymentIntentId,
+  guestItems,
+  deliveryOption,
+  shippingAddress,
+  clientIp = ''
+) {
+  const stripe = getStripe();
+  if (!stripe) {
+    const err = new Error('Stripe is not configured');
+    err.code = 'NO_STRIPE';
+    throw err;
+  }
+
+  const items = normalizeGuestItems(guestItems);
+  if (!items.length) {
+    const err = new Error('Cart is empty');
+    err.code = 'EMPTY_CART';
+    throw err;
+  }
+
+  const existing = await Order.findOne({ stripePaymentIntentId: paymentIntentId });
+  if (existing) {
+    const populated = await Order.findById(existing._id).populate(ORDER_POPULATE);
+    return { order: existing, populated, duplicate: true };
+  }
+
+  const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+  if (pi.metadata?.guestCheckout !== '1') {
+    const err = new Error('Invalid guest payment');
+    err.code = 'BAD_METADATA';
+    throw err;
+  }
+  if (pi.status !== 'succeeded') {
+    const err = new Error(`Payment not succeeded (status: ${pi.status})`);
+    err.code = 'NOT_SUCCEEDED';
+    throw err;
+  }
+
+  const snapshot = await buildGuestCheckoutSnapshot(items, deliveryOption);
+  const expectedCents = Math.round(snapshot.totalPrice * 100);
+  if (pi.amount !== expectedCents) {
+    const err = new Error('Cart total no longer matches payment amount');
+    err.code = 'AMOUNT_MISMATCH';
+    throw err;
+  }
+
+  const addr =
+    shippingAddress && typeof shippingAddress === 'object'
+      ? shippingAddress
+      : parseShippingFromMetadata(pi);
+
+  const userId = await resolveGuestCheckoutUser(addr);
+  const userObjectId = new mongoose.Types.ObjectId(userId);
+  const decremented = [];
+
+  try {
+    for (const line of snapshot.orderLines) {
+      const updated = await decrementStockAtomic(line.product, line.quantity);
+      if (!updated) {
+        for (const d of decremented.reverse()) {
+          await incrementStockRollback(d.productId, d.qty);
+        }
+        const err = new Error('Insufficient stock while completing order');
+        err.code = 'STOCK';
+        throw err;
+      }
+      decremented.push({ productId: line.product, qty: line.quantity });
+    }
+
+    const order = await Order.create({
+      user: userObjectId,
+      orderItems: snapshot.orderLines,
+      shippingAddress: {
+        firstName: addr.firstName ?? '',
+        lastName: addr.lastName ?? '',
+        street: addr.street ?? '',
+        city: addr.city ?? '',
+        state: addr.state ?? '',
+        zipCode: addr.zipCode ?? '',
+        country: addr.country ?? '',
+        phone: addr.phone ?? '',
+        email: addr.email != null ? String(addr.email).trim().slice(0, 200) : ''
+      },
+      deliveryOption: deliveryOption || 'standard',
+      paymentMethod: 'stripe',
+      paymentResult: {
+        id: pi.id,
+        status: pi.status,
+        update_time: new Date().toISOString(),
+        email_address: addr.email ?? ''
+      },
+      itemsPrice: snapshot.itemsPrice,
+      taxPrice: snapshot.taxPrice,
+      shippingPrice: snapshot.shippingPrice,
+      totalPrice: snapshot.totalPrice,
+      discountAmount: snapshot.discountAmount,
+      isPaid: true,
+      paidAt: new Date(),
+      status: 'processing',
+      stripePaymentIntentId: pi.id,
+      clientIp: clientIp ? String(clientIp).split(',')[0].trim() : ''
+    });
+
+    const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
+    const user = await User.findById(userId).select('name email');
+    try {
+      await sendOrderPlacedEmails(populated, user, addr);
+    } catch (mailErr) {
+      console.error('Guest stripe order email failed:', mailErr);
     }
 
     return { order, populated, duplicate: false };
@@ -418,6 +647,8 @@ async function finalizeOrderFromPaymentIntent(pi, options = {}) {
 
 module.exports = {
   buildPaymentIntentParams,
+  buildGuestPaymentIntentParams,
   finalizeOrderFromPaymentIntent,
+  finalizeGuestStripeOrder,
   ORDER_POPULATE
 };

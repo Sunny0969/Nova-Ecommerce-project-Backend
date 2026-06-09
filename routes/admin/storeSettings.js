@@ -24,7 +24,9 @@ router.get('/', async (req, res) => {
 
 /**
  * PUT /api/admin/store-settings
- * Body: { freeShippingMin, shippingStandard, shippingExpress, shippingNextDay, taxRate }
+ * Body: { freeShippingMin, shippingStandard, shippingExpress, shippingNextDay, taxRate,
+ *         weightShippingEnabled, weightShippingThresholdKg, shippingUpToThresholdKg,
+ *         shippingAdditionalPerKgOver, defaultProductWeightKg }
  */
 router.put('/', async (req, res) => {
   try {
@@ -34,7 +36,12 @@ router.put('/', async (req, res) => {
       shippingStandard: b.shippingStandard,
       shippingExpress: b.shippingExpress,
       shippingNextDay: b.shippingNextDay,
-      taxRate: b.taxRate
+      taxRate: b.taxRate,
+      weightShippingEnabled: b.weightShippingEnabled,
+      weightShippingThresholdKg: b.weightShippingThresholdKg,
+      shippingUpToThresholdKg: b.shippingUpToThresholdKg,
+      shippingAdditionalPerKgOver: b.shippingAdditionalPerKgOver,
+      defaultProductWeightKg: b.defaultProductWeightKg
     });
     ok(res, data, 'Shipping and tax settings saved');
   } catch (error) {

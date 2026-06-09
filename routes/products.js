@@ -23,6 +23,8 @@ const { productNameQueryForBrand } = require('../lib/brandFilters');
 const { queueProductEmbeddingUpdate, hybridSearch, suggestQueries } = require('../services/aiSearch');
 const { logSearchQuery, logSearchClick, getTrendingSearches } = require('../services/searchAnalytics');
 const { saleProductMatchFilter } = require('../lib/productSale');
+const { sanitizeProductDoc } = require('../lib/productDescription');
+const { productHasImageMongoMatch, productHasValidImage } = require('../lib/productImageFilter');
 
 const router = express.Router();
 
@@ -113,11 +115,18 @@ function shapeProductDoc(doc) {
   let badge = '';
   if (d.isFeatured) badge = 'bestseller';
 
+  const cleanedDesc = sanitizeProductDoc({
+    shortDescription: d.shortDescription || '',
+    description: d.description || '',
+    name: d.name || '',
+    slug: d.slug || ''
+  });
+
   return {
     _id: d._id,
     productId: d.slug,
     slug: d.slug,
-    name: d.name,
+    name: cleanedDesc.name,
     category: categorySlug || 'fashion',
     price: Number.isFinite(price) ? price : 0,
     comparePrice: Number.isFinite(comparePrice) ? comparePrice : undefined,
@@ -130,8 +139,8 @@ function shapeProductDoc(doc) {
     emoji: '📦',
     imageUrl: firstImg,
     images: Array.isArray(d.images) ? d.images : [],
-    description: d.description || '',
-    shortDescription: d.shortDescription || '',
+    description: cleanedDesc.description,
+    shortDescription: cleanedDesc.shortDescription,
     stockQuantity,
     rating: Number.isFinite(Number(d.ratings)) ? Number(d.ratings) : 0,
     ratingCount: Number.isFinite(Number(d.numReviews)) ? Number(d.numReviews) : 0,
@@ -147,6 +156,11 @@ function shapeProductDoc(doc) {
     color: d.color != null && String(d.color).trim() ? String(d.color).trim() : undefined,
     texture: d.texture != null && String(d.texture).trim() ? String(d.texture).trim() : undefined,
     size: d.size != null && String(d.size).trim() ? String(d.size).trim() : undefined,
+    weight: d.weight != null && String(d.weight).trim() ? String(d.weight).trim() : undefined,
+    weightKg:
+      d.weightKg != null && Number.isFinite(Number(d.weightKg)) && Number(d.weightKg) >= 0
+        ? Number(d.weightKg)
+        : undefined,
     variantGroupKey:
       d.variantGroupKey != null && String(d.variantGroupKey).trim()
         ? String(d.variantGroupKey).trim()
@@ -214,7 +228,7 @@ async function buildListFilter(query) {
     onSale
   } = query;
 
-  const and = [{ isPublished: true }];
+  const and = [{ isPublished: true }, productHasImageMongoMatch()];
 
   const q = String(search || '').trim();
   if (q) {
@@ -520,7 +534,8 @@ router.get('/featured', async (req, res) => {
   try {
     const raw = await Product.find({
       isPublished: true,
-      isFeatured: true
+      isFeatured: true,
+      ...productHasImageMongoMatch()
     })
       .sort({ createdAt: -1 })
       .limit(8)
@@ -547,7 +562,8 @@ router.get('/search', async (req, res) => {
     const rx = new RegExp(escapeRegex(q), 'i');
     const rows = await Product.find({
       isPublished: true,
-      name: rx
+      name: rx,
+      ...productHasImageMongoMatch()
     })
       .select('name slug')
       .sort({ name: 1 })
@@ -629,7 +645,7 @@ router.get('/ai-search', async (req, res) => {
     const result = await hybridSearch({ query: q, limit: 10, semanticWeight: 0.6, keywordWeight: 0.4 });
     const ids = result.items.map((x) => x.productId).filter(Boolean);
     const rows = ids.length
-      ? await Product.find({ _id: { $in: ids }, isPublished: true })
+      ? await Product.find({ _id: { $in: ids }, isPublished: true, ...productHasImageMongoMatch() })
           .populate('category', 'name slug')
           .lean()
       : [];
@@ -763,6 +779,13 @@ function parseMultipartBody(req) {
     color: b.color !== undefined ? String(b.color ?? '').trim().slice(0, 120) : undefined,
     texture: b.texture !== undefined ? String(b.texture ?? '').trim().slice(0, 120) : undefined,
     size: b.size !== undefined ? String(b.size ?? '').trim().slice(0, 120) : undefined,
+    weight: b.weight !== undefined ? String(b.weight ?? '').trim().slice(0, 120) : undefined,
+    weightKg: (() => {
+      if (b.weightKg === undefined) return undefined;
+      if (b.weightKg === '' || b.weightKg === null) return null;
+      const n = Number(b.weightKg);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    })(),
     variantGroupKey:
       b.variantGroupKey !== undefined
         ? String(b.variantGroupKey ?? '').trim().slice(0, 120)
@@ -871,7 +894,9 @@ router.post(
         variantAxes,
         color: legacy.color,
         texture: legacy.texture,
-        size: legacy.size
+        size: legacy.size,
+        weight: parsed.weight !== undefined ? String(parsed.weight || '').trim().slice(0, 120) : '',
+        weightKg: parsed.weightKg !== undefined ? parsed.weightKg : null
       };
       if (parsed.variantGroupKey !== undefined) {
         createPayload.variantGroupKey = parsed.variantGroupKey || '';
@@ -1189,6 +1214,8 @@ router.put(
           if (parsed.color !== undefined) product.color = parsed.color || '';
           if (parsed.texture !== undefined) product.texture = parsed.texture || '';
           if (parsed.size !== undefined) product.size = parsed.size || '';
+          if (parsed.weight !== undefined) product.weight = parsed.weight || '';
+          if (parsed.weightKg !== undefined) product.weightKg = parsed.weightKg;
         }
       } else {
         const body = req.body;
@@ -1239,6 +1266,11 @@ router.put(
           if (body.color !== undefined) product.color = String(body.color || '').trim().slice(0, 120);
           if (body.texture !== undefined) product.texture = String(body.texture || '').trim().slice(0, 120);
           if (body.size !== undefined) product.size = String(body.size || '').trim().slice(0, 120);
+          if (body.weight !== undefined) product.weight = String(body.weight || '').trim().slice(0, 120);
+          if (body.weightKg !== undefined) {
+            product.weightKg =
+              body.weightKg === '' || body.weightKg === null ? null : Number(body.weightKg);
+          }
         }
         if (body.variantGroupKey !== undefined) {
           product.variantGroupKey = String(body.variantGroupKey || '').trim().slice(0, 120);
@@ -1536,7 +1568,7 @@ router.get('/:slug', attachJwtUserSilent, async (req, res) => {
       return fail(res, 404, 'Product not found');
     }
 
-    if (!raw.isPublished) {
+    if (!raw.isPublished || !productHasValidImage(raw)) {
       const categoryId =
         typeof raw.category === 'object' && raw.category?._id
           ? raw.category._id
@@ -1545,13 +1577,14 @@ router.get('/:slug', attachJwtUserSilent, async (req, res) => {
         ? await Product.find({
             isPublished: true,
             category: categoryId,
-            _id: { $ne: raw._id }
+            _id: { $ne: raw._id },
+            ...productHasImageMongoMatch()
           })
             .sort({ createdAt: -1 })
             .limit(12)
             .populate('category', 'name slug')
             .lean()
-        : await Product.find({ isPublished: true, _id: { $ne: raw._id } })
+        : await Product.find({ isPublished: true, _id: { $ne: raw._id }, ...productHasImageMongoMatch() })
             .sort({ createdAt: -1 })
             .limit(12)
             .populate('category', 'name slug')

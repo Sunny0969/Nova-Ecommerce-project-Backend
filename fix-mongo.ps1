@@ -1,5 +1,5 @@
 $envPath = "c:\Users\IT_STORE\Desktop\Ecommerce\Nova-Ecommerce-project-Backend\.env"
-$newUri = "MONGODB_URI=mongodb+srv://laraibzahra988_db_user:5YPpBSIuf5p7bQQv@cluster0.fryrvvc.mongodb.net"
+$oldUri = "mongodb+srv://sunnypirkash_db_user:2YTA2tt9JZazQdnU@cluster0.gsuwyqf.mongodb.net"
 
 # Read existing content, remove old MONGODB_URI line, add new one
 $content = Get-Content $envPath -Raw

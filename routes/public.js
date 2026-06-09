@@ -16,10 +16,21 @@ function ok(res, data) {
 async function getMaxPublishedProductDiscountPercent() {
   const rows = await Product.aggregate([
     {
+      $addFields: {
+        compareAt: {
+          $cond: {
+            if: { $gt: [{ $ifNull: ['$originalPrice', 0] }, 0] },
+            then: '$originalPrice',
+            else: { $ifNull: ['$comparePrice', 0] }
+          }
+        }
+      }
+    },
+    {
       $match: {
         isPublished: true,
-        comparePrice: { $gt: 0 },
-        $expr: { $gt: ['$comparePrice', '$price'] }
+        compareAt: { $gt: 0 },
+        $expr: { $gt: ['$compareAt', '$price'] }
       }
     },
     {
@@ -28,7 +39,7 @@ async function getMaxPublishedProductDiscountPercent() {
           $round: [
             {
               $multiply: [
-                { $divide: [{ $subtract: ['$comparePrice', '$price'] }, '$comparePrice'] },
+                { $divide: [{ $subtract: ['$compareAt', '$price'] }, '$compareAt'] },
                 100
               ]
             },
@@ -45,25 +56,21 @@ async function getMaxPublishedProductDiscountPercent() {
 }
 
 async function buildPromoHighlight(settings) {
-  const [productPct, freeMinRaw] = await Promise.all([
-    getMaxPublishedProductDiscountPercent(),
-    Promise.resolve(Number(settings?.freeShippingMin))
-  ]);
+  const productPct = await getMaxPublishedProductDiscountPercent();
+  const maxDiscountPercent = productPct ?? 0;
 
-  const freeMin = Number(freeMinRaw);
+  const freeMin = Number(settings?.freeShippingMin);
   const freeDeliveryNote =
     Number.isFinite(freeMin) && freeMin > 0
-      ? `Free delivery over Rs ${Math.round(freeMin).toLocaleString('en-PK')}`
+      ? `Free delivery on orders above Rs ${Math.round(freeMin).toLocaleString('en-PK')}`
       : null;
 
-  if (productPct == null) return null;
-
   return {
-    maxDiscountPercent: productPct,
-    title: `Sale — Up to ${productPct}% Off`,
+    maxDiscountPercent,
+    title: `Sale — Up to ${maxDiscountPercent}% Off`,
     subtitle: freeDeliveryNote
       ? `Limited time • ${freeDeliveryNote}`
-      : 'Limited time • Best prices on Rozana'
+      : 'Limited time • Best prices on Bazaar'
   };
 }
 
@@ -100,6 +107,27 @@ router.get('/home-stats', async (req, res) => {
     console.error('public home-stats:', error);
     res.status(500).json({ success: false, message: error.message || 'Failed to load home stats' });
   }
+});
+
+/**
+ * GET /api/public/stripe-config
+ * Publishable key from backend — must match STRIPE_SECRET_KEY mode (live vs test).
+ */
+router.get('/stripe-config', (req, res) => {
+  const publishableKey = (process.env.STRIPE_PUBLISHABLE_KEY || '').trim();
+  const secretKey = (process.env.STRIPE_SECRET_KEY || '').trim();
+  const secretLive = secretKey.startsWith('sk_live_');
+  const secretTest = secretKey.startsWith('sk_test_');
+  const pubLive = publishableKey.startsWith('pk_live_');
+  const pubTest = publishableKey.startsWith('pk_test_');
+  const modeMatch =
+    (secretLive && pubLive) || (secretTest && pubTest);
+  const configured = Boolean(secretKey && publishableKey && modeMatch);
+  return ok(res, {
+    publishableKey: configured ? publishableKey : '',
+    configured,
+    mode: secretLive || pubLive ? 'live' : secretTest || pubTest ? 'test' : null
+  });
 });
 
 module.exports = router;

@@ -13,12 +13,21 @@
     "seed:sample": "node scripts/seedSampleProducts.js",
     "import:xlsx": "node scripts/importProductsFromXlsx.js",
     "import:blue-pottery": "node scripts/importBluePotteryHtml.js",
+    "import:wooden-handicrafts": "node scripts/importWoodenHandicraftsHtml.js",
+    "products:hide-no-image": "node scripts/unpublishProductsWithoutImages.js",
+    "blue-pottery:specs": "node scripts/updateBluePotterySpecs.js",
+    "products:sync-weight-kg": "node scripts/syncProductWeightKg.js",
+    "products:clean-descriptions": "node scripts/cleanProductDescriptions.js",
+    "products:repair-corrupt": "node scripts/repairCorruptProducts.js",
     "categories:sync": "node scripts/syncCategoryVisibility.js",
     "categories:restore": "node scripts/restoreStorefrontCategories.js",
+    "sync:production": "node scripts/syncCatalogFromProduction.js",
     "brands:replace-bazaar": "node scripts/replaceBrandsFromBazaar.js",
     "brands:hide-bazaar": "node scripts/hideBazaarPlaceholderBrands.js",
     "resync:slugs": "node scripts/resyncProductSlugsFromNames.js",
-    "create:admin": "node scripts/createAdminUser.js"
+    "create:admin": "node scripts/createAdminUser.js",
+    "test:email": "node scripts/testOrderEmail.js",
+    "sitemap:generate": "node scripts/generateSitemap.js"
   },
   "keywords": [
     "ecommerce",

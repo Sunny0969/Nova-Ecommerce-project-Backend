@@ -7,10 +7,45 @@ const PaymentFailureLog = require('../models/PaymentFailureLog');
 const { sendPaymentFailedEmail } = require('../lib/email');
 const {
   buildPaymentIntentParams,
-  finalizeOrderFromPaymentIntent
+  buildGuestPaymentIntentParams,
+  finalizeOrderFromPaymentIntent,
+  finalizeGuestStripeOrder
 } = require('../services/orderFromPaymentIntent');
 
 const router = express.Router();
+const guestRouter = express.Router();
+
+function clientIpFromReq(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.trim()) {
+    return xff.split(',')[0].trim();
+  }
+  return (req.ip && String(req.ip)) || '';
+}
+
+function handlePaymentIntentErrors(e, res) {
+  if (e.code === 'NO_STRIPE') {
+    fail(res, 503, 'Stripe is not configured. Set STRIPE_SECRET_KEY in environment.');
+    return true;
+  }
+  if (e.code === 'EMPTY_CART') {
+    fail(res, 400, 'Cart is empty');
+    return true;
+  }
+  if (e.code === 'NO_STOCK') {
+    fail(res, 400, e.message, e.details);
+    return true;
+  }
+  if (e.code === 'PRODUCT_GONE' || e.code === 'BAD_QTY' || e.code === 'BAD_PRICE') {
+    fail(res, 400, e.message);
+    return true;
+  }
+  if (e.code === 'MIN_AMOUNT' || e.code === 'BAD_TOTAL') {
+    fail(res, 400, e.message);
+    return true;
+  }
+  return false;
+}
 
 function ok(res, status, payload) {
   res.status(status).json({ success: true, ...payload });
@@ -47,29 +82,8 @@ router.post('/create-payment-intent', requireJwtAuth, async (req, res) => {
         shippingAddress
       );
     } catch (e) {
-      if (e.code === 'NO_STRIPE') {
-        return fail(
-          res,
-          503,
-          'Stripe is not configured. Set STRIPE_SECRET_KEY in environment.'
-        );
-      }
-      if (e.code === 'EMPTY_CART') {
-        return fail(res, 400, 'Cart is empty');
-      }
-      if (e.code === 'NO_STOCK') {
-        return fail(res, 400, e.message, e.details);
-      }
-      if (
-        e.code === 'PRODUCT_GONE' ||
-        e.code === 'BAD_QTY' ||
-        e.code === 'BAD_PRICE'
-      ) {
-        return fail(res, 400, e.message);
-      }
-      if (e.code === 'MIN_AMOUNT' || e.code === 'BAD_TOTAL') {
-        return fail(res, 400, e.message);
-      }
+      const handled = handlePaymentIntentErrors(e, res);
+      if (handled) return;
       throw e;
     }
 
@@ -88,6 +102,85 @@ router.post('/create-payment-intent', requireJwtAuth, async (req, res) => {
   } catch (error) {
     console.error('create-payment-intent error:', error);
     return fail(res, 500, error.message || 'Failed to create payment intent');
+  }
+});
+
+/**
+ * POST /api/stripe/guest/create-payment-intent — guest checkout (no JWT)
+ */
+guestRouter.post('/create-payment-intent', async (req, res) => {
+  try {
+    const deliveryOption = ['standard', 'express', 'nextday'].includes(req.body.deliveryOption)
+      ? req.body.deliveryOption
+      : 'standard';
+    const shippingAddress =
+      req.body.shippingAddress && typeof req.body.shippingAddress === 'object'
+        ? req.body.shippingAddress
+        : undefined;
+    const items = req.body.items;
+
+    let result;
+    try {
+      result = await buildGuestPaymentIntentParams(items, deliveryOption, shippingAddress);
+    } catch (e) {
+      const handled = handlePaymentIntentErrors(e, res);
+      if (handled) return;
+      throw e;
+    }
+
+    const { paymentIntent, amountCents, currency } = result;
+    return ok(res, 200, {
+      message: 'Payment intent created',
+      data: {
+        clientSecret: paymentIntent.client_secret,
+        paymentIntentId: paymentIntent.id,
+        amount: amountCents,
+        currency,
+        checkoutSummary: result.snapshotSummary
+      }
+    });
+  } catch (error) {
+    console.error('guest create-payment-intent error:', error);
+    return fail(res, 500, error.message || 'Failed to create payment intent');
+  }
+});
+
+/**
+ * POST /api/stripe/guest/confirm — finalize guest order after card payment
+ */
+guestRouter.post('/confirm', async (req, res) => {
+  try {
+    const { paymentIntentId, deliveryOption, shippingAddress, items } = req.body;
+    if (!paymentIntentId || typeof paymentIntentId !== 'string') {
+      return fail(res, 400, 'paymentIntentId is required');
+    }
+
+    let result;
+    try {
+      result = await finalizeGuestStripeOrder(
+        paymentIntentId,
+        items,
+        ['standard', 'express', 'nextday'].includes(deliveryOption) ? deliveryOption : 'standard',
+        shippingAddress && typeof shippingAddress === 'object' ? shippingAddress : {},
+        clientIpFromReq(req)
+      );
+    } catch (e) {
+      if (e.code === 'EMPTY_CART') return fail(res, 400, 'Cart is empty');
+      if (e.code === 'AMOUNT_MISMATCH') return fail(res, 409, e.message);
+      if (e.code === 'STOCK') return fail(res, 409, e.message);
+      if (e.code === 'BAD_EMAIL') return fail(res, 400, e.message);
+      if (e.code === 'NOT_SUCCEEDED' || e.code === 'BAD_METADATA') return fail(res, 400, e.message);
+      throw e;
+    }
+
+    const status = result.duplicate ? 200 : 201;
+    return ok(res, status, {
+      message: result.duplicate ? 'Order already recorded' : 'Order placed successfully',
+      data: { order: result.populated, duplicate: result.duplicate }
+    });
+  } catch (error) {
+    console.error('guest stripe confirm error:', error);
+    return fail(res, 500, error.message || 'Failed to confirm order');
   }
 });
 
@@ -181,5 +274,6 @@ async function webhookHandler(req, res) {
 
 module.exports = {
   router,
+  guestRouter,
   webhookHandler
 };

@@ -15,11 +15,11 @@ const {
   lineUnitPrice
 } = require('../utils/cartCoupon');
 const { getStoreSettings } = require('../services/storeSettings');
-const { computeTotalsPreview } = require('../utils/checkout');
+const { computeTotalsPreview, computeCartWeightKg } = require('../utils/checkout');
 
 const POPULATE_ITEMS = {
   path: 'items.product',
-  select: 'name price stock slug images description shortDescription category isPublished',
+  select: 'name price stock slug images description shortDescription category isPublished weight weightKg',
   populate: { path: 'category', select: 'name slug' }
 };
 
@@ -94,11 +94,13 @@ async function formatCartResponse(cartDoc) {
 
   const totals = cartDoc.calculateTotals();
   const settings = await getStoreSettings();
+  const cartWeightKg = computeCartWeightKg(items, settings);
   const pricingPreview = computeTotalsPreview(
     totals.itemsSubtotal,
     totals.discountAmount,
     'standard',
-    settings
+    settings,
+    cartWeightKg
   );
 
   let couponSummary = null;

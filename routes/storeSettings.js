@@ -7,6 +7,7 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   try {
     const data = await getStoreSettings();
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({ success: true, data });
   } catch (error) {
     console.error('store-settings GET error:', error);

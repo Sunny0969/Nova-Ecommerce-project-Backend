@@ -111,7 +111,7 @@ router.post('/create', async (req, res) => {
             'You have been added as a staff member at Nova Shop.',
             `Email:    ${emailLower}`,
             `Password: ${password}`,
-            `Login:    ${site}/staff-login`
+            `Login:    ${site}/login`
           ].join('\n')
         });
       } catch (mailErr) {

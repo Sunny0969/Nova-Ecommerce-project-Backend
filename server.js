@@ -159,8 +159,11 @@ app.use('/api/seo', require('./routes/seo'));
 ============================ */
 app.use('/api/cart', requireJwtAuth, require('./routes/cart'));
 app.use('/api/wishlist', requireJwtAuth, require('./routes/wishlist'));
+app.use('/api/orders/guest', require('./routes/guestOrders'));
 app.use('/api/orders', requireJwtAuth, require('./routes/orders'));
-app.use('/api/stripe', requireJwtAuth, stripeModule.router);
+/** Guest Stripe first; authenticated routes use JWT inside routes/stripe.js (not on this mount). */
+app.use('/api/stripe/guest', stripeModule.guestRouter);
+app.use('/api/stripe', stripeModule.router);
 
 /* ============================
    ADMIN + STAFF PERMISSION ROUTES
@@ -236,7 +239,7 @@ app.get('/', (req, res) => sendHealth(res));
 app.head('/', (req, res) => res.sendStatus(200));
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Nova Shop API is running' });
+  res.json({ status: 'OK', message: 'Bazaar API is running' });
 });
 
 app.get('/sitemap.xml', require('./routes/sitemap'));
@@ -274,6 +277,9 @@ async function startServer() {
     } catch (seedErr) {
       console.warn('[seed] Home categories sync skipped:', seedErr.message);
     }
+
+    const { verifyEmailOnStartup } = require('./lib/email');
+    await verifyEmailOnStartup();
 
     const server = app.listen(PORT, HOST, () => {
       console.log(`[Server] Listening on http://${HOST}:${PORT} (${isProduction ? 'production' : 'development'})`);

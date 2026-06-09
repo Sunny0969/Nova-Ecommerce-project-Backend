@@ -9,6 +9,7 @@ const Category = require('../../models/Category');
 const Review = require('../../models/Review');
 const { deleteByPublicId } = require('../../lib/cloudinary');
 const { sanitizeVariantAxes, collectVariantImagePublicIds } = require('../../lib/variantAxes');
+const { sanitizeProductDoc } = require('../../lib/productDescription');
 
 const router = express.Router();
 
@@ -275,12 +276,18 @@ function shapeProductForm(p) {
       ? null
       : Math.max(0, Math.floor(Number(p.lowStockThreshold)));
 
+  const cleanedDesc = sanitizeProductDoc({
+    shortDescription: p.shortDescription || '',
+    description: p.description || '',
+    name: p.name || ''
+  });
+
   return {
     _id: p._id,
     name: p.name,
     slug: p.slug,
-    shortDescription: p.shortDescription != null ? String(p.shortDescription) : '',
-    description: p.description != null ? String(p.description) : '',
+    shortDescription: cleanedDesc.shortDescription != null ? String(cleanedDesc.shortDescription) : '',
+    description: cleanedDesc.description != null ? String(cleanedDesc.description) : '',
     price: Number(p.price) || 0,
     comparePrice: p.comparePrice == null || p.comparePrice === '' ? null : Number(p.comparePrice),
     costPrice: p.costPrice == null || p.costPrice === '' ? null : Number(p.costPrice),
@@ -296,6 +303,11 @@ function shapeProductForm(p) {
     color: p.color != null ? String(p.color) : '',
     texture: p.texture != null ? String(p.texture) : '',
     size: p.size != null ? String(p.size) : '',
+    weight: p.weight != null ? String(p.weight) : '',
+    weightKg:
+      p.weightKg != null && Number.isFinite(Number(p.weightKg)) && Number(p.weightKg) >= 0
+        ? Number(p.weightKg)
+        : null,
     variantGroupKey: p.variantGroupKey != null ? String(p.variantGroupKey) : '',
     variantAxes: sanitizeVariantAxes(p.variantAxes || {})
   };

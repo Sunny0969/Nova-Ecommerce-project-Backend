@@ -128,6 +128,18 @@ const productSchema = new mongoose.Schema(
       maxlength: [120, 'Size is too long'],
       default: ''
     },
+    weight: {
+      type: String,
+      trim: true,
+      maxlength: [120, 'Weight is too long'],
+      default: ''
+    },
+    /** Shipping weight in kilograms (used for weight-based delivery charges). */
+    weightKg: {
+      type: Number,
+      min: [0, 'Weight cannot be negative'],
+      default: null
+    },
     /** Group variants or related SKUs within a category (arbitrary string) */
     variantGroupKey: {
       type: String,
