@@ -278,6 +278,13 @@ async function startServer() {
       console.warn('[seed] Home categories sync skipped:', seedErr.message);
     }
 
+    try {
+      const { ensureBootstrapAdmin } = require('./lib/ensureBootstrapAdmin');
+      await ensureBootstrapAdmin();
+    } catch (adminErr) {
+      console.warn('[Admin] Bootstrap admin skipped:', adminErr.message);
+    }
+
     const { verifyEmailOnStartup } = require('./lib/email');
     await verifyEmailOnStartup();
 

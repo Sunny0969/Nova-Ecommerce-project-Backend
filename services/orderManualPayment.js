@@ -7,7 +7,7 @@ const Coupon = require('../models/Coupon');
 const User = require('../models/User');
 const { buildCheckoutSnapshot, buildGuestCheckoutSnapshot } = require('../utils/checkout');
 const { EASYPAISA_NUMBER, PAYMENT_METHODS, isAllowedManualPaymentMethod } = require('../lib/paymentConfig');
-const { sendOrderPlacedEmails } = require('../lib/email');
+const { queueOrderPlacedEmails } = require('../lib/email');
 const { ORDER_POPULATE } = require('./orderFromPaymentIntent');
 const { resolveGuestCheckoutUser } = require('../lib/guestCheckoutUser');
 
@@ -144,13 +144,15 @@ async function finalizeOrderWithManualPayment(
     });
 
     try {
-      if (snapshot.couponId) {
-        await Coupon.findByIdAndUpdate(snapshot.couponId, { $inc: { usedCount: 1 } });
-      }
-      await Cart.findOneAndUpdate(
-        { user: userObjectId },
-        { $set: { items: [], coupon: null, discountAmount: 0 } }
-      );
+      await Promise.all([
+        snapshot.couponId
+          ? Coupon.findByIdAndUpdate(snapshot.couponId, { $inc: { usedCount: 1 } })
+          : Promise.resolve(),
+        Cart.findOneAndUpdate(
+          { user: userObjectId },
+          { $set: { items: [], coupon: null, discountAmount: 0 } }
+        )
+      ]);
     } catch (afterErr) {
       await Order.deleteOne({ _id: order._id });
       for (const d of decremented.reverse()) {
@@ -162,13 +164,11 @@ async function finalizeOrderWithManualPayment(
       throw afterErr;
     }
 
-    const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
-    const user = await User.findById(userId).select('name email');
-    try {
-      await sendOrderPlacedEmails(populated, user, addr);
-    } catch (mailErr) {
-      console.error('Order notification emails failed:', mailErr);
-    }
+    const [populated, user] = await Promise.all([
+      Order.findById(order._id).populate(ORDER_POPULATE),
+      User.findById(userId).select('name email')
+    ]);
+    queueOrderPlacedEmails(populated, user, addr);
 
     return { order, populated, duplicate: false };
   } catch (err) {
@@ -292,14 +292,22 @@ async function createManualOrderFromSnapshot(
     });
 
     try {
+      const afterOrderTasks = [];
       if (snapshot.couponId) {
-        await Coupon.findByIdAndUpdate(snapshot.couponId, { $inc: { usedCount: 1 } });
+        afterOrderTasks.push(
+          Coupon.findByIdAndUpdate(snapshot.couponId, { $inc: { usedCount: 1 } })
+        );
       }
       if (clearServerCart) {
-        await Cart.findOneAndUpdate(
-          { user: userObjectId },
-          { $set: { items: [], coupon: null, discountAmount: 0 } }
+        afterOrderTasks.push(
+          Cart.findOneAndUpdate(
+            { user: userObjectId },
+            { $set: { items: [], coupon: null, discountAmount: 0 } }
+          )
         );
+      }
+      if (afterOrderTasks.length) {
+        await Promise.all(afterOrderTasks);
       }
     } catch (afterErr) {
       await Order.deleteOne({ _id: order._id });
@@ -312,13 +320,11 @@ async function createManualOrderFromSnapshot(
       throw afterErr;
     }
 
-    const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
-    const user = await User.findById(userId).select('name email');
-    try {
-      await sendOrderPlacedEmails(populated, user, addr);
-    } catch (mailErr) {
-      console.error('Order notification emails failed:', mailErr);
-    }
+    const [populated, user] = await Promise.all([
+      Order.findById(order._id).populate(ORDER_POPULATE),
+      User.findById(userId).select('name email')
+    ]);
+    queueOrderPlacedEmails(populated, user, addr);
 
     return { order, populated, duplicate: false };
   } catch (err) {
