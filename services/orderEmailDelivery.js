@@ -4,20 +4,9 @@ const User = require('../models/User');
 const { sendOrderPlacedEmails } = require('../lib/email');
 const { ORDER_POPULATE } = require('./orderFromPaymentIntent');
 
-const MAX_ATTEMPTS = 6;
-const RETRY_MS = 2 * 60 * 1000;
+const MAX_ATTEMPTS = 8;
+const RETRY_MS = 90 * 1000;
 const inFlight = new Set();
-
-function shippingSnapshotFromResult(result) {
-  if (result?.emailNotify?.addr && typeof result.emailNotify.addr === 'object') {
-    return { ...result.emailNotify.addr };
-  }
-  const ship = result?.populated?.shippingAddress;
-  if (ship && typeof ship === 'object') {
-    return typeof ship.toObject === 'function' ? ship.toObject() : { ...ship };
-  }
-  return null;
-}
 
 function deliverySucceeded(results) {
   if (
@@ -34,48 +23,58 @@ function deliverySucceeded(results) {
   return adminSent && (customerSent || customerSkippedNoEmail);
 }
 
+/** Create pending row once — no upsert operators that can conflict. */
+async function ensurePendingOrderEmail(orderId) {
+  const existing = await PendingOrderEmail.findOne({ order: orderId });
+  if (existing) return existing;
+
+  try {
+    return await PendingOrderEmail.create({
+      order: orderId,
+      status: 'pending',
+      attempts: 0
+    });
+  } catch (err) {
+    if (err.code === 11000) {
+      return PendingOrderEmail.findOne({ order: orderId });
+    }
+    throw err;
+  }
+}
+
 async function deliverPendingOrderEmail(orderId) {
   const id = String(orderId);
   if (inFlight.has(id)) return;
   inFlight.add(id);
 
   try {
-    let pending = await PendingOrderEmail.findOne({ order: orderId });
-    if (pending?.status === 'sent') return;
+    const pending = await ensurePendingOrderEmail(orderId);
+    if (!pending || pending.status === 'sent') return;
+    if (pending.attempts >= MAX_ATTEMPTS) return;
 
-    if (!pending) {
-      pending = await PendingOrderEmail.create({
-        order: orderId,
-        status: 'pending',
-        attempts: 0
-      });
-    } else if (pending.status === 'failed' || pending.attempts >= MAX_ATTEMPTS) {
-      return;
-    }
-
-    pending = await PendingOrderEmail.findOneAndUpdate(
-      { _id: pending._id, status: { $ne: 'sent' } },
-      { $inc: { attempts: 1 }, $set: { lastError: '' } },
+    const claimed = await PendingOrderEmail.findOneAndUpdate(
+      { _id: pending._id, status: { $ne: 'sent' }, attempts: { $lt: MAX_ATTEMPTS } },
+      { $inc: { attempts: 1 }, $set: { lastError: '', status: 'pending' } },
       { new: true }
     );
-    if (!pending) return;
+    if (!claimed) return;
 
     const order = await Order.findById(orderId).populate(ORDER_POPULATE);
     if (!order) {
       await PendingOrderEmail.updateOne(
-        { _id: pending._id },
+        { _id: claimed._id },
         { $set: { lastError: 'Order not found', status: 'failed' } }
       );
       return;
     }
 
     const user = await User.findById(order.user).select('name email');
-    const shippingOverride = pending.shippingSnapshot || undefined;
+    const shippingOverride = order.shippingAddress || undefined;
 
     const results = await sendOrderPlacedEmails(order, user, shippingOverride);
     if (deliverySucceeded(results)) {
       await PendingOrderEmail.updateOne(
-        { _id: pending._id },
+        { _id: claimed._id },
         { $set: { status: 'sent', sentAt: new Date(), lastError: '' } }
       );
       console.log('[email] Order notifications sent for', id);
@@ -86,9 +85,9 @@ async function deliverPendingOrderEmail(orderId) {
       results?.adminResult?.reason ||
       results?.customerResult?.reason ||
       'Unknown email delivery failure';
-    const failed = pending.attempts >= MAX_ATTEMPTS;
+    const failed = claimed.attempts >= MAX_ATTEMPTS;
     await PendingOrderEmail.updateOne(
-      { _id: pending._id },
+      { _id: claimed._id },
       {
         $set: {
           lastError: String(reason).slice(0, 500),
@@ -117,45 +116,29 @@ async function deliverPendingOrderEmail(orderId) {
 
 async function enqueueOrderEmailsFromResult(result) {
   if (!result || result.duplicate || !result.populated?._id) return;
-
   const orderId = result.populated._id;
-  const shippingSnapshot = shippingSnapshotFromResult(result);
-
-  const update = {
-    $setOnInsert: {
-      order: orderId,
-      status: 'pending',
-      attempts: 0
-    }
-  };
-  if (shippingSnapshot) {
-    update.$set = { shippingSnapshot };
-  }
-
-  await PendingOrderEmail.findOneAndUpdate({ order: orderId }, update, { upsert: true, new: true });
-
-  void deliverPendingOrderEmail(orderId);
+  await ensurePendingOrderEmail(orderId);
+  await deliverPendingOrderEmail(orderId);
 }
 
 function scheduleOrderEmailsFromResult(result, res) {
   if (!result || result.duplicate || !result.populated?._id) return;
 
   const orderId = String(result.populated._id);
-  let scheduled = false;
+  let started = false;
 
   const run = () => {
-    if (scheduled) return;
-    scheduled = true;
+    if (started) return;
+    started = true;
     void enqueueOrderEmailsFromResult(result).catch((err) => {
-      scheduled = false;
-      console.error('[email] Failed to enqueue order emails for', orderId, '—', err?.message || err);
+      started = false;
+      console.error('[email] Failed to deliver order emails for', orderId, '—', err?.message || err);
     });
   };
 
   if (res && typeof res.once === 'function' && !res.writableEnded) {
     res.once('finish', run);
-    res.once('close', run);
-    setTimeout(run, 2000);
+    setTimeout(run, 1500);
     return;
   }
 
@@ -164,11 +147,11 @@ function scheduleOrderEmailsFromResult(result, res) {
 
 async function retryPendingOrderEmails() {
   const pending = await PendingOrderEmail.find({
-    status: 'pending',
+    status: { $in: ['pending', 'failed'] },
     attempts: { $lt: MAX_ATTEMPTS }
   })
     .sort({ updatedAt: 1 })
-    .limit(25)
+    .limit(30)
     .select('order');
 
   for (const row of pending) {
@@ -176,7 +159,27 @@ async function retryPendingOrderEmails() {
   }
 }
 
+/** Queue emails for recent orders that never got a sent notification. */
+async function backfillMissedOrderEmails() {
+  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const notified = await PendingOrderEmail.find({ status: 'sent' }).distinct('order');
+  const recent = await Order.find({
+    createdAt: { $gte: since },
+    _id: { $nin: notified }
+  })
+    .sort({ createdAt: -1 })
+    .limit(40)
+    .select('_id');
+
+  for (const row of recent) {
+    await deliverPendingOrderEmail(row._id);
+  }
+}
+
 function startOrderEmailRetryWorker() {
+  void backfillMissedOrderEmails().catch((err) => {
+    console.error('[email] Order email backfill failed:', err?.message || err);
+  });
   void retryPendingOrderEmails().catch((err) => {
     console.error('[email] Initial pending order email sweep failed:', err?.message || err);
   });
@@ -192,5 +195,6 @@ module.exports = {
   scheduleOrderEmailsFromResult,
   deliverPendingOrderEmail,
   retryPendingOrderEmails,
+  backfillMissedOrderEmails,
   startOrderEmailRetryWorker
 };
