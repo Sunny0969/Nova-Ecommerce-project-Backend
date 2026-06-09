@@ -7,7 +7,6 @@ const Coupon = require('../models/Coupon');
 const User = require('../models/User');
 const { buildCheckoutSnapshot, buildGuestCheckoutSnapshot } = require('../utils/checkout');
 const { EASYPAISA_NUMBER, PAYMENT_METHODS, isAllowedManualPaymentMethod } = require('../lib/paymentConfig');
-const { queueOrderPlacedEmails } = require('../lib/email');
 const { ORDER_POPULATE } = require('./orderFromPaymentIntent');
 const { resolveGuestCheckoutUser } = require('../lib/guestCheckoutUser');
 
@@ -168,9 +167,8 @@ async function finalizeOrderWithManualPayment(
       Order.findById(order._id).populate(ORDER_POPULATE),
       User.findById(userId).select('name email')
     ]);
-    queueOrderPlacedEmails(populated, user, addr);
 
-    return { order, populated, duplicate: false };
+    return { order, populated, duplicate: false, emailNotify: { user, addr } };
   } catch (err) {
     for (const d of decremented.reverse()) {
       try {
@@ -324,9 +322,8 @@ async function createManualOrderFromSnapshot(
       Order.findById(order._id).populate(ORDER_POPULATE),
       User.findById(userId).select('name email')
     ]);
-    queueOrderPlacedEmails(populated, user, addr);
 
-    return { order, populated, duplicate: false };
+    return { order, populated, duplicate: false, emailNotify: { user, addr } };
   } catch (err) {
     for (const d of decremented.reverse()) {
       try {

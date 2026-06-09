@@ -15,10 +15,10 @@ const {
   extractCardFingerprint
 } = require('./fraudDetection');
 const {
-  queueOrderPlacedEmails,
   sendNewOrderAdminEmail,
   sendFraudFlaggedAdminEmail,
-  sendOrderHeldForFraudReviewEmail
+  sendOrderHeldForFraudReviewEmail,
+  toPlainDoc
 } = require('../lib/email');
 
 const ORDER_POPULATE = [
@@ -392,36 +392,41 @@ async function finalizeOrderFromPaymentIntent(pi, options = {}) {
     });
 
     const orderShipAddr = order.shippingAddress || {};
+    let emailNotify;
     if (orderStatus === 'flagged') {
-      void (async () => {
-        try {
-          if (user?.email || orderShipAddr.email) {
-            await sendOrderHeldForFraudReviewEmail(
-              user || { name: orderShipAddr.firstName, email: orderShipAddr.email },
-              populated
-            );
+      const plainOrder = toPlainDoc(populated);
+      const plainUser = toPlainDoc(user);
+      setImmediate(() => {
+        void (async () => {
+          try {
+            if (plainUser?.email || orderShipAddr.email) {
+              await sendOrderHeldForFraudReviewEmail(
+                plainUser || { name: orderShipAddr.firstName, email: orderShipAddr.email },
+                plainOrder
+              );
+            }
+            const adminTo = process.env.ADMIN_EMAIL || process.env.EMAIL_USER;
+            if (adminTo) {
+              await Promise.all([
+                sendFraudFlaggedAdminEmail(adminTo, {
+                  orderId: String(order._id),
+                  riskScore: fraudResult.score,
+                  factors: fraudResult.factors,
+                  userEmail: orderShipAddr.email || plainUser?.email || ''
+                }),
+                sendNewOrderAdminEmail(plainOrder, plainUser, orderShipAddr)
+              ]);
+            }
+          } catch (mailErr) {
+            console.error('Order / fraud notification email failed:', mailErr);
           }
-          const adminTo = process.env.ADMIN_EMAIL;
-          if (adminTo) {
-            await Promise.all([
-              sendFraudFlaggedAdminEmail(adminTo, {
-                orderId: String(order._id),
-                riskScore: fraudResult.score,
-                factors: fraudResult.factors,
-                userEmail: orderShipAddr.email || user?.email || ''
-              }),
-              sendNewOrderAdminEmail(populated, user, orderShipAddr)
-            ]);
-          }
-        } catch (mailErr) {
-          console.error('Order / fraud notification email failed:', mailErr);
-        }
-      })();
+        })();
+      });
     } else {
-      queueOrderPlacedEmails(populated, user, orderShipAddr);
+      emailNotify = { user, addr: orderShipAddr };
     }
 
-    return { order, populated, duplicate: false };
+    return { order, populated, duplicate: false, emailNotify };
   } catch (err) {
     for (const d of decremented.reverse()) {
       try {
@@ -634,9 +639,8 @@ async function finalizeGuestStripeOrder(
       Order.findById(order._id).populate(ORDER_POPULATE),
       User.findById(userId).select('name email')
     ]);
-    queueOrderPlacedEmails(populated, user, addr);
 
-    return { order, populated, duplicate: false };
+    return { order, populated, duplicate: false, emailNotify: { user, addr } };
   } catch (err) {
     for (const d of decremented.reverse()) {
       try {

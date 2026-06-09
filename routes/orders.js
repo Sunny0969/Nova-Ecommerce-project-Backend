@@ -8,6 +8,7 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const { getStripe } = require('../lib/stripeClient');
 const { sendOrderCancelledEmail } = require('../lib/email');
+const { scheduleOrderEmailsFromResult } = require('../lib/orderNotify');
 const {
   finalizeOrderFromPaymentIntent,
   ORDER_POPULATE
@@ -134,6 +135,8 @@ router.post('/confirm', async (req, res) => {
 
     if (req.session) req.session.cart = [];
 
+    scheduleOrderEmailsFromResult(result, res);
+
     const status = result.duplicate ? 200 : 201;
     return ok(res, status, {
       message: result.duplicate
@@ -195,6 +198,8 @@ async function handleManualPlaceOrder(req, res) {
   }
 
   if (req.session) req.session.cart = [];
+
+  scheduleOrderEmailsFromResult(result, res);
 
   return ok(res, 201, {
     message: 'Order placed successfully',

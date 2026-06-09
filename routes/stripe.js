@@ -5,6 +5,7 @@ const { requireJwtAuth } = require('../middleware/jwtAuth');
 const User = require('../models/User');
 const PaymentFailureLog = require('../models/PaymentFailureLog');
 const { sendPaymentFailedEmail } = require('../lib/email');
+const { scheduleOrderEmailsFromResult } = require('../lib/orderNotify');
 const {
   buildPaymentIntentParams,
   buildGuestPaymentIntentParams,
@@ -174,6 +175,7 @@ guestRouter.post('/confirm', async (req, res) => {
     }
 
     const status = result.duplicate ? 200 : 201;
+    scheduleOrderEmailsFromResult(result, res);
     return ok(res, status, {
       message: result.duplicate ? 'Order already recorded' : 'Order placed successfully',
       data: { order: result.populated, duplicate: result.duplicate }
@@ -215,7 +217,8 @@ async function webhookHandler(req, res) {
       case 'payment_intent.succeeded': {
         const pi = event.data.object;
         try {
-          await finalizeOrderFromPaymentIntent(pi, {});
+          const result = await finalizeOrderFromPaymentIntent(pi, {});
+          scheduleOrderEmailsFromResult(result, res);
         } catch (e) {
           console.error('[webhook] finalizeOrderFromPaymentIntent:', e);
           if (e.code === 'AMOUNT_MISMATCH' || e.code === 'EMPTY_CART') {

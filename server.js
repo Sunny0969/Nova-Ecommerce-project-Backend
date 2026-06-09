@@ -239,7 +239,15 @@ app.get('/', (req, res) => sendHealth(res));
 app.head('/', (req, res) => res.sendStatus(200));
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Bazaar API is running' });
+  const { isEmailConfigured, getAdminEmail } = require('./lib/email');
+  res.json({
+    status: 'OK',
+    message: 'Bazaar API is running',
+    email: {
+      configured: isEmailConfigured(),
+      adminRecipient: Boolean(getAdminEmail())
+    }
+  });
 });
 
 app.get('/sitemap.xml', require('./routes/sitemap'));
