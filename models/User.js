@@ -86,6 +86,12 @@ const userSchema = new mongoose.Schema(
     savedAddresses: {
       type: [savedAddressSchema],
       default: () => []
+    },
+    /** True when account was auto-created during guest checkout (activate via Register). */
+    createdViaGuestCheckout: {
+      type: Boolean,
+      default: false,
+      index: true
     }
   },
   { timestamps: true }

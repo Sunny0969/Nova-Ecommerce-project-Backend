@@ -6,6 +6,7 @@ const User = require('../models/User');
 const Review = require('../models/Review');
 const StaffAccess = require('../models/StaffAccess');
 const { mergeSessionCartIntoUserCart } = require('../utils/cartSync');
+const { isActivatableGuestAccount, activateGuestAccount } = require('../lib/guestAccount');
 const { signToken, verifyToken, requireJwtAuth } = require('../middleware/jwtAuth');
 const { uploadImageBuffer } = require('../lib/cloudinary');
 
@@ -150,9 +151,34 @@ router.post('/register', async (req, res) => {
     const emailNorm = normalizeEmail(email);
     const existingUser = await User.findOne({ email: emailNorm });
     if (existingUser) {
+      if (await isActivatableGuestAccount(existingUser)) {
+        const activated = await activateGuestAccount(existingUser, {
+          name: String(name).trim(),
+          password,
+          phone
+        });
+
+        const guestCart = req.session.cart ? [...req.session.cart] : [];
+        if (guestCart.length > 0) {
+          await mergeSessionCartIntoUserCart(activated._id, guestCart);
+          req.session.cart = [];
+        }
+
+        const token = signToken(activated);
+
+        return res.status(200).json({
+          success: true,
+          code: 'GUEST_ACCOUNT_ACTIVATED',
+          message: 'Account activated — your order history is now in My Orders.',
+          token,
+          user: authPayloadForUser(activated)
+        });
+      }
+
       return res.status(400).json({
         success: false,
-        message: 'User with this email already exists'
+        code: 'EMAIL_EXISTS',
+        message: 'User with this email already exists. Sign in instead.'
       });
     }
 
@@ -222,6 +248,15 @@ router.post('/login', async (req, res) => {
     const staffMatch = staff ? await staff.comparePassword(password) : false;
 
     if (!userMatch && !staffMatch) {
+      if (user && (await isActivatableGuestAccount(user))) {
+        return res.status(401).json({
+          success: false,
+          code: 'GUEST_SET_PASSWORD',
+          message:
+            'You placed an order with this email as a guest. Open Register, use the same email, and set a password to view your orders.'
+        });
+      }
+
       return res.status(401).json({
         success: false,
         code: 'INVALID_PASSWORD',

@@ -308,13 +308,6 @@ router.post('/:id/payment-proof', proofUpload.single('proof'), async (req, res) 
     await order.save();
 
     const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
-    const user = await User.findById(req.authUserId).select('name email');
-    try {
-      const { sendNewOrderAdminEmail } = require('../lib/email');
-      await sendNewOrderAdminEmail(populated, user);
-    } catch (mailErr) {
-      console.error('Admin payment-proof email failed:', mailErr);
-    }
 
     return ok(res, 200, {
       message: 'Payment proof saved',
