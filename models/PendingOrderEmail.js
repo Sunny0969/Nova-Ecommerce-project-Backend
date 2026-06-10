@@ -15,6 +15,8 @@ const pendingOrderEmailSchema = new mongoose.Schema(
       default: 'pending',
       index: true
     },
+    customerNotified: { type: Boolean, default: false },
+    adminNotified: { type: Boolean, default: false },
     attempts: { type: Number, default: 0 },
     lastError: { type: String, default: '' },
     shippingSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
