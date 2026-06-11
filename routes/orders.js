@@ -8,7 +8,8 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const { getStripe } = require('../lib/stripeClient');
 const { sendOrderCancelledEmail } = require('../lib/email');
-const { scheduleOrderEmailsFromResult } = require('../lib/orderNotify');
+const { notifyOrderPlaced } = require('../lib/orderNotify');
+const { refundOrderToWallet } = require('../services/walletService');
 const {
   finalizeOrderFromPaymentIntent,
   ORDER_POPULATE
@@ -29,6 +30,10 @@ const proofUpload = multer({
     cb(null, true);
   }
 });
+
+function round2(n) {
+  return Math.round(Number(n) * 100) / 100;
+}
 
 function isBankTransferOrder(order) {
   const id = order.paymentResult?.id || '';
@@ -135,7 +140,7 @@ router.post('/confirm', async (req, res) => {
 
     if (req.session) req.session.cart = [];
 
-    scheduleOrderEmailsFromResult(result, res);
+    notifyOrderPlaced(result, res, req);
 
     const status = result.duplicate ? 200 : 201;
     return ok(res, status, {
@@ -174,6 +179,11 @@ async function handleManualPlaceOrder(req, res) {
   const transactionId =
     req.body.transactionId != null ? String(req.body.transactionId).trim().slice(0, 120) : '';
 
+  const walletOpts = { useWallet: Boolean(req.body.useWallet) };
+  if (paymentMethod === 'bank_transfer') {
+    walletOpts.transactionId = transactionId;
+  }
+
   let result;
   try {
     result = await finalizeOrderWithManualPayment(
@@ -182,7 +192,7 @@ async function handleManualPlaceOrder(req, res) {
       shippingAddress,
       paymentMethod,
       clientIpFromReq(req),
-      paymentMethod === 'bank_transfer' ? { transactionId } : {}
+      walletOpts
     );
   } catch (e) {
     if (e.code === 'EMPTY_CART') {
@@ -194,12 +204,15 @@ async function handleManualPlaceOrder(req, res) {
     if (e.code === 'PRODUCT_GONE' || e.code === 'BAD_QTY' || e.code === 'BAD_PRICE') {
       return fail(res, 400, e.message);
     }
+    if (e.code === 'INSUFFICIENT_WALLET') {
+      return fail(res, 409, 'Insufficient wallet balance');
+    }
     throw e;
   }
 
   if (req.session) req.session.cart = [];
 
-  scheduleOrderEmailsFromResult(result, res);
+  notifyOrderPlaced(result, res, req);
 
   return ok(res, 201, {
     message: 'Order placed successfully',
@@ -404,7 +417,10 @@ router.post('/cancel/:id', async (req, res) => {
     }
 
     const stripe = getStripe();
-    if (stripe && order.stripePaymentIntentId && order.isPaid) {
+    const paidViaStripe =
+      stripe && order.stripePaymentIntentId && order.isPaid && Number(order.walletAmountUsed || 0) === 0;
+
+    if (paidViaStripe) {
       try {
         await stripe.refunds.create({
           payment_intent: order.stripePaymentIntentId
@@ -428,6 +444,19 @@ router.post('/cancel/:id', async (req, res) => {
     order.cancelReason =
       req.body.reason != null ? String(req.body.reason).slice(0, 1000) : '';
     await order.save();
+
+    const refundTotal =
+      round2(Number(order.walletAmountUsed) || 0) + round2(Number(order.totalPrice) || 0);
+    if (refundTotal > 0) {
+      try {
+        await refundOrderToWallet(order.user, order, {
+          amount: refundTotal,
+          description: `Refund for cancelled order #${String(order._id).slice(-8).toUpperCase()} (added to Bazaar Wallet)`
+        });
+      } catch (walletErr) {
+        console.error('Wallet refund on cancel failed:', walletErr);
+      }
+    }
 
     const user = await User.findById(req.authUserId).select('name email');
     if (user?.email) {

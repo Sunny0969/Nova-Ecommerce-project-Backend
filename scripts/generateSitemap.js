@@ -1,16 +1,31 @@
 /**
- * Writes frontend/public/sitemap.xml for static Hostinger deploys.
- * Run before `npm run build` in frontend, or on a schedule after catalog changes.
+ * Writes frontend/public/sitemap.xml + robots.txt for Hostinger (Google Search Console).
+ * Run after catalog changes and before `npm run build`.
  *
- * Usage: node scripts/generateSitemap.js
- * Env: MONGODB_URI, FRONTEND_URL (optional, defaults to https://bazaar-pk.com)
+ * Usage (from repo root):
+ *   node backend/scripts/generateSitemap.js
+ *
+ * Env: MONGODB_URI, FRONTEND_URL (prefer https://www.bazaar-pk.com)
  */
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
 const { buildSitemapXml } = require('../lib/buildSitemap');
+const { buildRobotsTxt } = require('../lib/seoRobots');
 const { publicSiteUrl } = require('../lib/publicSiteUrl');
+
+/** Production URLs in sitemap.xml — never write localhost for static deploy files */
+function sitemapSiteUrl() {
+  const override = String(process.env.SITEMAP_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (override) return override;
+
+  const url = publicSiteUrl();
+  if (/localhost|127\.0\.0\.1/i.test(url)) {
+    return 'https://www.bazaar-pk.com';
+  }
+  return url;
+}
 
 async function main() {
   const uri = process.env.MONGODB_URI;
@@ -20,14 +35,20 @@ async function main() {
   }
 
   await mongoose.connect(uri);
-  const siteUrl = publicSiteUrl();
+  const siteUrl = sitemapSiteUrl();
   const xml = await buildSitemapXml(siteUrl);
+  const robots = buildRobotsTxt(siteUrl);
 
-  const outPath = path.join(__dirname, '../../frontend/public/sitemap.xml');
-  fs.writeFileSync(outPath, `${xml}\n`, 'utf8');
+  const publicDir = path.join(__dirname, '../../frontend/public');
+  const sitemapPath = path.join(publicDir, 'sitemap.xml');
+  const robotsPath = path.join(publicDir, 'robots.txt');
+
+  fs.writeFileSync(sitemapPath, `${xml}\n`, 'utf8');
+  fs.writeFileSync(robotsPath, `${robots.trim()}\n`, 'utf8');
 
   const urlCount = (xml.match(/<url>/g) || []).length;
-  console.log(`Wrote ${urlCount} URLs to ${outPath}`);
+  console.log(`Wrote ${urlCount} URLs to ${sitemapPath}`);
+  console.log(`Wrote robots.txt → ${robotsPath}`);
   console.log(`Site base: ${siteUrl}`);
 
   await mongoose.disconnect();

@@ -5,7 +5,7 @@ const { requireJwtAuth } = require('../middleware/jwtAuth');
 const User = require('../models/User');
 const PaymentFailureLog = require('../models/PaymentFailureLog');
 const { sendPaymentFailedEmail } = require('../lib/email');
-const { scheduleOrderEmailsFromResult } = require('../lib/orderNotify');
+const { notifyOrderPlaced } = require('../lib/orderNotify');
 const {
   buildPaymentIntentParams,
   buildGuestPaymentIntentParams,
@@ -175,7 +175,7 @@ guestRouter.post('/confirm', async (req, res) => {
     }
 
     const status = result.duplicate ? 200 : 201;
-    scheduleOrderEmailsFromResult(result, res);
+    notifyOrderPlaced(result, res, req);
     return ok(res, status, {
       message: result.duplicate ? 'Order already recorded' : 'Order placed successfully',
       data: { order: result.populated, duplicate: result.duplicate }
@@ -216,9 +216,26 @@ async function webhookHandler(req, res) {
     switch (event.type) {
       case 'payment_intent.succeeded': {
         const pi = event.data.object;
+        if (pi.metadata?.type === 'wallet_topup') {
+          const userId = pi.metadata?.userId;
+          const amount = Math.round(Number(pi.metadata.amountPkr || pi.amount / 100) * 100) / 100;
+          if (userId && mongoose.Types.ObjectId.isValid(userId) && amount > 0) {
+            try {
+              const { creditWallet } = require('../services/walletService');
+              await creditWallet(userId, amount, {
+                reason: 'top_up',
+                description: 'Wallet top-up via card',
+                referenceKey: `topup:${pi.id}`
+              });
+            } catch (walletErr) {
+              console.error('[webhook] wallet top-up:', walletErr);
+            }
+          }
+          return res.status(200).json({ received: true, walletTopUp: true });
+        }
         try {
           const result = await finalizeOrderFromPaymentIntent(pi, {});
-          scheduleOrderEmailsFromResult(result, res);
+          notifyOrderPlaced(result, res, req);
         } catch (e) {
           console.error('[webhook] finalizeOrderFromPaymentIntent:', e);
           if (e.code === 'AMOUNT_MISMATCH' || e.code === 'EMPTY_CART') {

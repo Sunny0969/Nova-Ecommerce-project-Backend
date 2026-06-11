@@ -61,6 +61,22 @@ const storeSettingsSchema = new mongoose.Schema(
       type: Number,
       default: 1,
       min: 0.01
+    },
+    walletCashbackEnabled: {
+      type: Boolean,
+      default: true
+    },
+    /** Minimum order total (PKR) to earn walletCashbackAmount. */
+    walletCashbackMinOrder: {
+      type: Number,
+      default: 5000,
+      min: 0
+    },
+    /** Flat cashback credited to wallet when order is delivered. */
+    walletCashbackAmount: {
+      type: Number,
+      default: 500,
+      min: 0
     }
   },
   { timestamps: true }

@@ -4,6 +4,7 @@ const Order = require('../../models/Order');
 const User = require('../../models/User');
 const { sendOrderShippedEmail } = require('../../lib/email');
 const { ORDER_POPULATE } = require('../../services/orderFromPaymentIntent');
+const { creditCashbackForOrder } = require('../../services/walletService');
 const {
   hydratePaymentProof,
   persistHydratedPaymentProof
@@ -243,9 +244,15 @@ router.put('/:id/status', async (req, res) => {
     if (nextStatus === 'delivered') {
       order.isDelivered = true;
       order.deliveredAt = order.deliveredAt || new Date();
+      await order.save();
+      try {
+        await creditCashbackForOrder(order);
+      } catch (cashbackErr) {
+        console.error('Wallet cashback error:', cashbackErr);
+      }
+    } else {
+      await order.save();
     }
-
-    await order.save();
 
     const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
     return ok(res, 200, {

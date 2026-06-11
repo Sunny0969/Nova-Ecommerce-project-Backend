@@ -92,6 +92,12 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
       index: true
+    },
+    /** Store credit balance (PKR) — updated via WalletTransaction ledger. */
+    walletBalance: {
+      type: Number,
+      default: 0,
+      min: 0
     }
   },
   { timestamps: true }

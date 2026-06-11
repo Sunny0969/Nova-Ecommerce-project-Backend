@@ -6,6 +6,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const { sanitizeProductDoc, needsDescriptionCleanup } = require('../lib/productDescription');
+const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
 
 async function main() {
   const uri = process.env.MONGODB_URI || process.env.MONGO_URI;
@@ -48,6 +49,7 @@ async function main() {
   }
 
   console.log(`\nDone. Updated ${updated} of ${scanned} product(s).`);
+  if (updated > 0) invalidateCatalogCache();
   await mongoose.disconnect();
 }
 

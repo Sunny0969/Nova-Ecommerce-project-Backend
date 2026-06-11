@@ -204,4 +204,59 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/admin/customers/:id/wallet — credit or debit customer wallet
+ * body: { amount, direction: 'credit'|'debit', note }
+ */
+router.post('/:id/wallet', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return fail(res, 400, 'Invalid user id');
+    }
+
+    const user = await User.findById(id);
+    if (!user || user.role !== 'customer') {
+      return fail(res, 404, 'Customer not found');
+    }
+
+    const amount = Math.round(Number(req.body.amount) * 100) / 100;
+    const direction = req.body.direction === 'debit' ? 'debit' : 'credit';
+    const note = String(req.body.note || '').trim().slice(0, 500);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return fail(res, 400, 'Valid amount is required');
+    }
+
+    const { creditWallet, debitWallet } = require('../../services/walletService');
+    const result =
+      direction === 'debit'
+        ? await debitWallet(user._id, amount, {
+            reason: 'admin_adjustment',
+            description: note || 'Adjusted by admin',
+            createdBy: req.authUserId
+          })
+        : await creditWallet(user._id, amount, {
+            reason: 'admin_adjustment',
+            description: note || 'Credited by admin',
+            createdBy: req.authUserId
+          });
+
+    const safe = await User.findById(user._id)
+      .select('-password -verificationToken -resetPasswordToken -resetPasswordExpire')
+      .lean();
+
+    return ok(res, 200, {
+      message: direction === 'debit' ? 'Wallet debited' : 'Wallet credited',
+      data: { customer: safe, balance: result.balance, transaction: result.transaction }
+    });
+  } catch (error) {
+    if (error.code === 'INSUFFICIENT_WALLET') {
+      return fail(res, 409, 'Insufficient wallet balance');
+    }
+    console.error('Admin wallet adjust error:', error);
+    return fail(res, 500, error.message || 'Failed to update wallet');
+  }
+});
+
 module.exports = router;

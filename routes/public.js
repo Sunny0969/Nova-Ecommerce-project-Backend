@@ -6,6 +6,8 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const Category = require('../models/Category');
 const { getStoreSettings } = require('../services/storeSettings');
+const { getOrSet, CACHE_KEYS } = require('../lib/apiCache');
+const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
 
 const router = express.Router();
 
@@ -80,29 +82,34 @@ async function buildPromoHighlight(settings) {
  */
 router.get('/home-stats', async (req, res) => {
   try {
-    const [productCount, customerCount, categoryCount, settings] = await Promise.all([
-      Product.countDocuments({ isPublished: true }),
-      User.countDocuments({ role: 'customer', isActive: { $ne: false } }),
-      Category.countDocuments({ isActive: { $ne: false } }),
-      getStoreSettings()
-    ]);
+    const { value: data, hit } = await getOrSet(CACHE_KEYS.PUBLIC_HOME_STATS, async () => {
+      const [productCount, customerCount, categoryCount, settings] = await Promise.all([
+        Product.countDocuments({ isPublished: true }),
+        User.countDocuments({ role: 'customer', isActive: { $ne: false } }),
+        Category.countDocuments({ isActive: { $ne: false } }),
+        getStoreSettings()
+      ]);
 
-    const freeMin = Number(settings?.freeShippingMin);
-    const deliveryLabel =
-      Number.isFinite(freeMin) && freeMin > 0
-        ? `Free delivery over Rs ${Math.round(freeMin).toLocaleString('en-PK')}`
-        : null;
+      const freeMin = Number(settings?.freeShippingMin);
+      const deliveryLabel =
+        Number.isFinite(freeMin) && freeMin > 0
+          ? `Free delivery over Rs ${Math.round(freeMin).toLocaleString('en-PK')}`
+          : null;
 
-    const promo = await buildPromoHighlight(settings);
+      const promo = await buildPromoHighlight(settings);
 
-    return ok(res, {
-      productCount: productCount > 0 ? productCount : null,
-      customerCount: customerCount > 0 ? customerCount : null,
-      categoryCount: categoryCount > 0 ? categoryCount : null,
-      deliveryLabel,
-      hasPublishedProducts: productCount > 0,
-      promo
+      return {
+        productCount: productCount > 0 ? productCount : null,
+        customerCount: customerCount > 0 ? customerCount : null,
+        categoryCount: categoryCount > 0 ? categoryCount : null,
+        deliveryLabel,
+        hasPublishedProducts: productCount > 0,
+        promo
+      };
     });
+
+    setPublicApiCacheHeaders(res, { hit });
+    return ok(res, data);
   } catch (error) {
     console.error('public home-stats:', error);
     res.status(500).json({ success: false, message: error.message || 'Failed to load home stats' });

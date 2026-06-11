@@ -212,6 +212,15 @@ const orderSchema = new mongoose.Schema(
         }
       ],
       default: () => []
+    },
+    walletAmountUsed: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    cashbackCredited: {
+      type: Boolean,
+      default: false
     }
   },
   { timestamps: true }

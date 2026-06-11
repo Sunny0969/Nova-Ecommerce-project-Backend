@@ -6,6 +6,8 @@ const {
 configureMongoDns();
 
 const path = require('path');
+const fs = require('fs');
+const http = require('http');
 const express = require('express');
 const mongoose = require('mongoose');
 const session = require('express-session');
@@ -13,6 +15,13 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
+const { Server } = require('socket.io');
+const { initWhatsAppSocket } = require('./lib/whatsappSocket');
+const {
+  createCachedStaticMiddleware,
+  createSpaFallbackHandler,
+  CACHE_SEO_CONTROL
+} = require('./lib/staticCacheHeaders');
 
 const app = express();
 // Port 5000 is often blocked/reserved on Windows — use 5001 locally. Render sets PORT (e.g. 10000).
@@ -149,16 +158,19 @@ app.use('/api/products', require('./routes/products'));
 app.use('/api/events', require('./routes/events'));
 app.use('/api/recommendations', require('./routes/recommendations'));
 app.use('/api/chatbot', require('./routes/chatbot.impl'));
+app.use('/api/chat', require('./routes/whatsappChat'));
 app.use('/api/staff', require('./routes/staff')); // ✅ public staff auth
 app.use('/api/blog', require('./routes/blog'));
 app.use('/api/public', require('./routes/public'));
 app.use('/api/seo', require('./routes/seo'));
+app.use('/api/meta', require('./routes/meta'));
 
 /* ============================
    AUTH REQUIRED ROUTES
 ============================ */
 app.use('/api/cart', requireJwtAuth, require('./routes/cart'));
 app.use('/api/wishlist', requireJwtAuth, require('./routes/wishlist'));
+app.use('/api/wallet', requireJwtAuth, require('./routes/wallet'));
 app.use('/api/orders/guest', require('./routes/guestOrders'));
 app.use('/api/orders', requireJwtAuth, require('./routes/orders'));
 /** Guest Stripe first; authenticated routes use JWT inside routes/stripe.js (not on this mount). */
@@ -263,7 +275,25 @@ app.get('/sitemap.xml', require('./routes/sitemap'));
 app.get('/robots.txt', require('./routes/robots'));
 
 app.use(require('./middleware/normalizeSpaUrl'));
-app.use(express.static(path.join(__dirname, '..')));
+
+/**
+ * Optional: serve CRA build from Express (same host as API).
+ * Set FRONTEND_BUILD_PATH=/absolute/path/to/frontend/build on Railway or VPS.
+ * Hostinger static deploy uses frontend/public/.htaccess instead.
+ */
+const frontendBuildPath = process.env.FRONTEND_BUILD_PATH
+  ? path.resolve(process.env.FRONTEND_BUILD_PATH)
+  : null;
+const frontendIndexPath =
+  frontendBuildPath && fs.existsSync(path.join(frontendBuildPath, 'index.html'))
+    ? path.join(frontendBuildPath, 'index.html')
+    : null;
+
+if (frontendIndexPath) {
+  app.use(createCachedStaticMiddleware(frontendBuildPath));
+  app.get('*', createSpaFallbackHandler(frontendIndexPath));
+  console.log('[static] Serving frontend build with 6-month asset cache:', frontendBuildPath);
+}
 
 app.use((req, res) => {
   res.status(404).json({
@@ -296,6 +326,14 @@ async function startServer() {
     }
 
     try {
+      const { ensureProductIndexes } = require('./lib/ensureProductIndexes');
+      await ensureProductIndexes();
+      console.log('[MongoDB] Product indexes synced');
+    } catch (idxErr) {
+      console.warn('[MongoDB] Product index sync skipped:', idxErr.message);
+    }
+
+    try {
       const { ensureBootstrapAdmin } = require('./lib/ensureBootstrapAdmin');
       await ensureBootstrapAdmin();
     } catch (adminErr) {
@@ -315,7 +353,24 @@ async function startServer() {
     const { startOrderEmailRetryWorker } = require('./services/orderEmailDelivery');
     startOrderEmailRetryWorker();
 
-    const server = app.listen(PORT, HOST, () => {
+    const httpServer = http.createServer(app);
+    const io = new Server(httpServer, {
+      cors: {
+        origin(origin, callback) {
+          if (isAllowedCorsOrigin(origin)) {
+            callback(null, true);
+            return;
+          }
+          callback(null, false);
+        },
+        credentials: true
+      },
+      path: '/socket.io'
+    });
+    app.set('io', io);
+    initWhatsAppSocket(io);
+
+    const server = httpServer.listen(PORT, HOST, () => {
       console.log(`[Server] Listening on http://${HOST}:${PORT} (${isProduction ? 'production' : 'development'})`);
       if (process.env.RAILWAY_PUBLIC_DOMAIN) {
         console.log(`[Server] Railway public URL: https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);

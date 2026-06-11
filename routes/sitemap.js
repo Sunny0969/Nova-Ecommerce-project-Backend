@@ -1,11 +1,13 @@
 const { buildSitemapXml } = require('../lib/buildSitemap');
 
+const { CACHE_SEO_CONTROL } = require('../lib/staticCacheHeaders');
+
 /**
  * GET /sitemap.xml — dynamic sitemap for the SPA (see server.js mount).
  */
 module.exports = async function sitemapHandler(req, res) {
   res.setHeader('Content-Type', 'application/xml; charset=utf-8');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.setHeader('Cache-Control', CACHE_SEO_CONTROL);
 
   try {
     const xml = await buildSitemapXml();

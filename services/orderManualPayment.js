@@ -9,6 +9,11 @@ const { buildCheckoutSnapshot, buildGuestCheckoutSnapshot } = require('../utils/
 const { EASYPAISA_NUMBER, PAYMENT_METHODS, isAllowedManualPaymentMethod } = require('../lib/paymentConfig');
 const { ORDER_POPULATE } = require('./orderFromPaymentIntent');
 const { resolveGuestCheckoutUser } = require('../lib/guestCheckoutUser');
+const {
+  getWalletBalance,
+  computeWalletApplication,
+  debitWallet
+} = require('./walletService');
 
 async function decrementStockAtomic(productId, qty) {
   return Product.findOneAndUpdate(
@@ -36,12 +41,6 @@ async function finalizeOrderWithManualPayment(
   clientIp = '',
   paymentProofInput = {}
 ) {
-  if (!isAllowedManualPaymentMethod(paymentMethod)) {
-    const err = new Error('Invalid payment method');
-    err.code = 'BAD_PAYMENT_METHOD';
-    throw err;
-  }
-
   let snapshot;
   try {
     snapshot = await buildCheckoutSnapshot(userId, deliveryOption);
@@ -50,7 +49,27 @@ async function finalizeOrderWithManualPayment(
     throw e;
   }
 
-  const meta = PAYMENT_METHODS[paymentMethod];
+  const useWallet = Boolean(paymentProofInput.useWallet);
+  const walletBalance = await getWalletBalance(userId);
+  const walletApply = computeWalletApplication(snapshot.totalPrice, walletBalance, useWallet);
+  const walletAmountUsed = walletApply.walletAmountUsed;
+  const orderTotal = walletApply.totalAfterWallet;
+
+  if (orderTotal <= 0 && walletAmountUsed <= 0) {
+    const err = new Error('Invalid order total');
+    err.code = 'BAD_TOTAL';
+    throw err;
+  }
+
+  if (orderTotal <= 0 && walletAmountUsed > 0) {
+    paymentMethod = 'wallet';
+  } else if (!isAllowedManualPaymentMethod(paymentMethod)) {
+    const err = new Error('Invalid payment method');
+    err.code = 'BAD_PAYMENT_METHOD';
+    throw err;
+  }
+
+  const meta = PAYMENT_METHODS[paymentMethod] || PAYMENT_METHODS.cod;
   const addr =
     shippingAddress && typeof shippingAddress === 'object' ? shippingAddress : {};
 
@@ -67,7 +86,7 @@ async function finalizeOrderWithManualPayment(
       ? String(paymentProofInput.imagePublicId).trim().slice(0, 200)
       : '';
 
-  const notes =
+  const notesBase =
     paymentMethod === 'bank_transfer'
       ? [
           `Easypaisa: ${EASYPAISA_NUMBER}.`,
@@ -77,7 +96,14 @@ async function finalizeOrderWithManualPayment(
         ]
           .filter(Boolean)
           .join(' ')
-      : 'Cash on delivery — payment due when the order is delivered.';
+      : paymentMethod === 'wallet'
+        ? 'Paid in full with Bazaar Wallet.'
+        : 'Cash on delivery — payment due when the order is delivered.';
+
+  const notes =
+    walletAmountUsed > 0 && paymentMethod !== 'wallet'
+      ? `${notesBase} Rs ${walletAmountUsed} applied from Bazaar Wallet.`
+      : notesBase;
 
   const paymentProof =
     paymentMethod === 'bank_transfer'
@@ -124,25 +150,35 @@ async function finalizeOrderWithManualPayment(
       paymentMethod: meta.paymentMethodLabel,
       paymentResult: {
         id: paymentMethod,
-        status: 'pending',
+        status: paymentMethod === 'wallet' ? 'succeeded' : 'pending',
         update_time: new Date().toISOString(),
         email_address: addr.email ?? ''
       },
       itemsPrice: snapshot.itemsPrice,
       taxPrice: snapshot.taxPrice,
       shippingPrice: snapshot.shippingPrice,
-      totalPrice: snapshot.totalPrice,
+      totalPrice: orderTotal,
+      walletAmountUsed,
       discountAmount: snapshot.discountAmount,
       coupon: snapshot.couponId || undefined,
-      isPaid: false,
-      paidAt: null,
-      status: 'pending',
+      isPaid: paymentMethod === 'wallet',
+      paidAt: paymentMethod === 'wallet' ? new Date() : null,
+      status: paymentMethod === 'wallet' ? 'processing' : 'pending',
       notes,
       ...(paymentMethod === 'bank_transfer' ? { paymentProof } : {}),
       clientIp: clientIp ? String(clientIp).split(',')[0].trim() : ''
     });
 
     try {
+      if (walletAmountUsed > 0) {
+        await debitWallet(userId, walletAmountUsed, {
+          reason: 'checkout',
+          description: `Used on order #${String(order._id).slice(-8).toUpperCase()}`,
+          orderId: order._id,
+          referenceKey: `checkout:order:${order._id}`
+        });
+      }
+
       await Promise.all([
         snapshot.couponId
           ? Coupon.findByIdAndUpdate(snapshot.couponId, { $inc: { usedCount: 1 } })
@@ -159,6 +195,11 @@ async function finalizeOrderWithManualPayment(
       }
       if (snapshot.couponId) {
         await Coupon.findByIdAndUpdate(snapshot.couponId, { $inc: { usedCount: -1 } });
+      }
+      if (afterErr.code === 'INSUFFICIENT_WALLET') {
+        const err = new Error('Insufficient wallet balance');
+        err.code = 'INSUFFICIENT_WALLET';
+        throw err;
       }
       throw afterErr;
     }

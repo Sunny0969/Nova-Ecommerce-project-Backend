@@ -10,6 +10,13 @@ const Review = require('../../models/Review');
 const { deleteByPublicId } = require('../../lib/cloudinary');
 const { sanitizeVariantAxes, collectVariantImagePublicIds } = require('../../lib/variantAxes');
 const { sanitizeProductDoc } = require('../../lib/productDescription');
+const {
+  ADMIN_LIST_SELECT,
+  parseProductPagination,
+  ADMIN_LIST_DEFAULT_LIMIT,
+  ADMIN_LIST_MAX_LIMIT
+} = require('../../lib/productQueries');
+const { invalidateCatalogCache } = require('../../lib/invalidatePublicCache');
 
 const router = express.Router();
 
@@ -213,6 +220,7 @@ router.post('/:id/approve', requireMountedAdmin, async (req, res) => {
     ).lean();
 
     ok(res, updated);
+    invalidateCatalogCache();
   } catch (e) {
     console.error('Admin approve product:', e);
     fail(res, 500, e.message || 'Failed to approve product');
@@ -251,6 +259,7 @@ router.post('/:id/reject', requireMountedAdmin, async (req, res) => {
     ).lean();
 
     ok(res, updated);
+    invalidateCatalogCache();
   } catch (e) {
     console.error('Admin reject product:', e);
     fail(res, 500, e.message || 'Failed to reject product');
@@ -318,9 +327,10 @@ function shapeProductForm(p) {
  */
 router.get('/', async (req, res) => {
   try {
-    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
-    const skip = (page - 1) * limit;
+    const { page, limit, skip, totalPages } = parseProductPagination(req.query, {
+      defaultLimit: ADMIN_LIST_DEFAULT_LIMIT,
+      maxLimit: ADMIN_LIST_MAX_LIMIT
+    });
 
     const and = [];
     const q = String(req.query.search || '').trim();
@@ -358,6 +368,7 @@ router.get('/', async (req, res) => {
 
     const [rawRows, totalCount] = await Promise.all([
       Product.find(filter)
+        .select(`${ADMIN_LIST_SELECT} lowStockThreshold submittedByStaff`)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -367,12 +378,10 @@ router.get('/', async (req, res) => {
 
     const raw = await attachCategoriesToProducts(rawRows);
 
-    const totalPages = Math.ceil(totalCount / limit) || 0;
-
     ok(res, {
       products: raw.map(shapeListItem),
       totalCount,
-      totalPages,
+      totalPages: totalPages(totalCount),
       currentPage: page
     });
   } catch (error) {
@@ -439,6 +448,7 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
         { _id: { $in: valid } },
         { $set: { isPublished: true } }
       );
+      invalidateCatalogCache();
       return ok(res, { modified: r.modifiedCount });
     }
 
@@ -447,6 +457,7 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
         { _id: { $in: valid } },
         { $set: { isPublished: false } }
       );
+      invalidateCatalogCache();
       return ok(res, { modified: r.modifiedCount });
     }
 
@@ -455,6 +466,7 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
         { _id: { $in: valid } },
         { $set: { isPublished: false } }
       );
+      invalidateCatalogCache();
       return ok(res, { modified: r.modifiedCount, soft: true });
     }
 
@@ -472,6 +484,7 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
         }
         await Product.deleteOne({ _id: product._id });
       }
+      invalidateCatalogCache();
       return ok(res, { deleted: docs.length, hard: true });
     }
 

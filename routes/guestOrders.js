@@ -1,7 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const { finalizeGuestOrderWithManualPayment } = require('../services/orderManualPayment');
-const { scheduleOrderEmailsFromResult } = require('../lib/orderNotify');
+const { notifyOrderPlaced } = require('../lib/orderNotify');
 const { uploadImageBuffer, ensureConfigured } = require('../lib/cloudinary');
 
 const router = express.Router();
@@ -104,7 +104,7 @@ router.post('/place', proofUpload.single('proof'), async (req, res) => {
       { transactionId, imageUrl: proofImageUrl, imagePublicId: proofImagePublicId }
     );
 
-    scheduleOrderEmailsFromResult(result, res);
+    notifyOrderPlaced(result, res, req);
 
     return ok(res, 201, {
       message: 'Order placed successfully',

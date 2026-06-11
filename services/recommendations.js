@@ -25,14 +25,21 @@ function cosineSimilarity(a, b) {
   return dot(a, b) / (norm(a) * norm(b));
 }
 
+const { CARD_PRODUCT_SELECT } = require('../lib/productQueries');
+const { shapeProductListItem } = require('../lib/productListShape');
+
 async function loadProductsByIdsOrdered(ids) {
   const uniq = [...new Set(ids.map(String))].filter((x) => mongoose.Types.ObjectId.isValid(x));
   if (!uniq.length) return [];
   const rows = await Product.find({ _id: { $in: uniq }, isPublished: true })
+    .select(CARD_PRODUCT_SELECT)
     .populate('category', 'name slug')
     .lean();
   const by = new Map(rows.map((r) => [String(r._id), r]));
-  return ids.map((id) => by.get(String(id))).filter(Boolean);
+  return ids
+    .map((id) => by.get(String(id)))
+    .filter(Boolean)
+    .map(shapeProductListItem);
 }
 
 async function getUserPurchasedProductIds(userId, days = 365) {

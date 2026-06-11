@@ -61,6 +61,7 @@ function authPayloadForUser(user) {
     roles,
     permissions: [],
     permissionMap: {},
+    walletBalance: Math.round(Number(user.walletBalance || 0) * 100) / 100,
     savedShippingAddress: user.savedShippingAddress || null,
     savedAddresses: Array.isArray(user.savedAddresses)
       ? user.savedAddresses.map((a) => (typeof a.toObject === 'function' ? a.toObject() : a))

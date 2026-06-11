@@ -25,6 +25,16 @@ const { logSearchQuery, logSearchClick, getTrendingSearches } = require('../serv
 const { saleProductMatchFilter } = require('../lib/productSale');
 const { sanitizeProductDoc } = require('../lib/productDescription');
 const { productHasImageMongoMatch, productHasValidImage } = require('../lib/productImageFilter');
+const {
+  CARD_PRODUCT_SELECT,
+  CARD_AGG_FINAL_PROJECT,
+  parseProductPagination,
+  findProductsLean
+} = require('../lib/productQueries');
+const { shapeProductListItem } = require('../lib/productListShape');
+const { getOrSet, CACHE_KEYS } = require('../lib/apiCache');
+const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
+const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
 
 const router = express.Router();
 
@@ -66,29 +76,21 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** List/search filter — regex on name, slug, etc. (no MongoDB text index required). */
+/** List/search filter — regex on `name` (uses name / category+name indexes). */
 function productSearchFilter(q) {
   const raw = String(q || '').trim();
   if (!raw) return null;
 
-  const terms = raw.split(/\s+/).filter(Boolean).slice(0, 8);
+  const terms = raw.split(/\s+/).filter(Boolean).slice(0, 6);
   if (!terms.length) return null;
 
-  const fieldMatch = (term) => {
-    const rx = new RegExp(escapeRegex(term), 'i');
-    return {
-      $or: [
-        { name: rx },
-        { slug: rx },
-        { shortDescription: rx },
-        { sku: rx },
-        { tags: rx }
-      ]
-    };
-  };
+  if (terms.length === 1) {
+    return { name: new RegExp(escapeRegex(terms[0]), 'i') };
+  }
 
-  if (terms.length === 1) return fieldMatch(terms[0]);
-  return { $and: terms.map(fieldMatch) };
+  return {
+    $and: terms.map((term) => ({ name: new RegExp(escapeRegex(term), 'i') }))
+  };
 }
 
 function shapeProductDoc(doc) {
@@ -256,14 +258,14 @@ async function buildListFilter(query) {
   })();
 
   if (slugList.length === 1) {
-    const cat = await Category.findOne({ slug: slugList[0] }).select('_id');
+    const cat = await Category.findOne({ slug: slugList[0] }).select('_id').lean();
     if (!cat) {
       and.push({ _id: { $in: [] } });
     } else {
       and.push({ category: cat._id });
     }
   } else if (slugList.length > 1) {
-    const cats = await Category.find({ slug: { $in: slugList } }).select('_id');
+    const cats = await Category.find({ slug: { $in: slugList } }).select('_id').lean();
     const ids = cats.map((c) => c._id);
     if (!ids.length) {
       and.push({ _id: { $in: [] } });
@@ -327,18 +329,18 @@ async function buildListFilter(query) {
 
 function buildListSort(sortParam) {
   switch (sortParam) {
-      case 'price-asc':
-      return { price: 1 };
-      case 'price-desc':
-      return { price: -1 };
+    case 'price-asc':
+      return { price: 1, _id: 1 };
+    case 'price-desc':
+      return { price: -1, _id: -1 };
     case 'rating':
-      return { ratings: -1, numReviews: -1 };
+      return { ratings: -1, numReviews: -1, _id: -1 };
     case 'popular':
       return { numReviews: -1, ratings: -1, createdAt: -1 };
-      case 'name':
+    case 'name':
       return { name: 1, _id: 1 };
     case 'newest':
-      default:
+    default:
       return { createdAt: -1, _id: -1 };
   }
 }
@@ -348,29 +350,20 @@ function buildListSort(sortParam) {
  */
 router.get('/', async (req, res) => {
   try {
-    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 12));
-    const skip = (page - 1) * limit;
+    const { page, limit, skip, totalPages } = parseProductPagination(req.query);
     const sort = buildListSort(req.query.sort);
 
     const filter = await buildListFilter(req.query);
 
     const [raw, totalCount] = await Promise.all([
-      Product.find(filter)
-        .sort(sort)
-        .skip(skip)
-        .limit(limit)
-        .populate('category', 'name slug')
-        .lean(),
+      findProductsLean(filter, { sort, skip, limit }),
       Product.countDocuments(filter)
     ]);
 
-    const totalPages = Math.ceil(totalCount / limit);
-
     ok(res, {
-      products: raw.map(shapeProductDoc),
+      products: raw.map(shapeProductListItem),
       totalCount,
-      totalPages,
+      totalPages: totalPages(totalCount),
       currentPage: page
     });
   } catch (error) {
@@ -386,96 +379,102 @@ router.get('/home-category-sales', async (req, res) => {
   try {
     const categoryLimit = Math.min(10, Math.max(1, parseInt(req.query.categories, 10) || 5));
     const productLimit = Math.min(20, Math.max(1, parseInt(req.query.productsPerCategory, 10) || 12));
+    const cacheKey = CACHE_KEYS.homeCategorySales(categoryLimit, productLimit);
 
-    const categoryRows = await Product.aggregate([
-      { $match: saleProductMatchFilter() },
-      {
-        $group: {
-          _id: '$category',
-          saleCount: { $sum: 1 },
-          latestSaleAt: { $max: '$createdAt' }
+    const { value: payload, hit } = await getOrSet(cacheKey, async () => {
+      const categoryRows = await Product.aggregate([
+        { $match: saleProductMatchFilter() },
+        {
+          $group: {
+            _id: '$category',
+            saleCount: { $sum: 1 },
+            latestSaleAt: { $max: '$createdAt' }
+          }
+        },
+        {
+          $lookup: {
+            from: 'categories',
+            localField: '_id',
+            foreignField: '_id',
+            as: '_cat'
+          }
+        },
+        { $unwind: '$_cat' },
+        { $match: { '_cat.isActive': { $ne: false } } },
+        { $sort: { '_cat.updatedAt': -1, latestSaleAt: -1 } },
+        { $limit: categoryLimit },
+        {
+          $project: {
+            categoryId: '$_id',
+            name: '$_cat.name',
+            slug: '$_cat.slug',
+            saleCount: 1
+          }
         }
-      },
-      {
-        $lookup: {
-          from: 'categories',
-          localField: '_id',
-          foreignField: '_id',
-          as: '_cat'
-        }
-      },
-      { $unwind: '$_cat' },
-      { $match: { '_cat.isActive': { $ne: false } } },
-      { $sort: { '_cat.updatedAt': -1, latestSaleAt: -1 } },
-      { $limit: categoryLimit },
-      {
-        $project: {
-          categoryId: '$_id',
-          name: '$_cat.name',
-          slug: '$_cat.slug',
-          saleCount: 1
-        }
+      ]);
+
+      if (!categoryRows.length) {
+        return { rows: [] };
       }
-    ]);
 
-    if (!categoryRows.length) {
-      return ok(res, { rows: [] });
-    }
-
-    const rows = (
-      await Promise.all(
-        categoryRows.map(async (row) => {
-          const raw = await Product.aggregate([
-            {
-              $match: {
-                ...saleProductMatchFilter(),
-                category: row.categoryId
-              }
-            },
-            {
-              $addFields: {
-                _saleDiscountPct: {
-                  $multiply: [
-                    {
-                      $divide: [{ $subtract: ['$comparePrice', '$price'] }, '$comparePrice']
-                    },
-                    100
-                  ]
+      const rows = (
+        await Promise.all(
+          categoryRows.map(async (row) => {
+            const raw = await Product.aggregate([
+              {
+                $match: {
+                  ...saleProductMatchFilter(),
+                  category: row.categoryId
                 }
-              }
-            },
-            { $sort: { _saleDiscountPct: -1, createdAt: -1 } },
-            { $limit: productLimit },
-            {
-              $lookup: {
-                from: 'categories',
-                localField: 'category',
-                foreignField: '_id',
-                as: '_categoryPop'
-              }
-            },
-            {
-              $addFields: {
-                category: { $arrayElemAt: ['$_categoryPop', 0] }
-              }
-            },
-            { $project: { _categoryPop: 0, _saleDiscountPct: 0 } }
-          ]);
+              },
+              {
+                $addFields: {
+                  _saleDiscountPct: {
+                    $multiply: [
+                      {
+                        $divide: [{ $subtract: ['$comparePrice', '$price'] }, '$comparePrice']
+                      },
+                      100
+                    ]
+                  }
+                }
+              },
+              { $sort: { _saleDiscountPct: -1, createdAt: -1 } },
+              { $limit: productLimit },
+              {
+                $lookup: {
+                  from: 'categories',
+                  localField: 'category',
+                  foreignField: '_id',
+                  as: '_categoryPop'
+                }
+              },
+              {
+                $addFields: {
+                  category: { $arrayElemAt: ['$_categoryPop', 0] }
+                }
+              },
+              { $project: CARD_AGG_FINAL_PROJECT }
+            ]);
 
-          return {
-            category: {
-              _id: row.categoryId,
-              name: row.name,
-              slug: row.slug,
-              saleCount: row.saleCount
-            },
-            products: raw.map(shapeProductDoc)
-          };
-        })
-      )
-    ).filter((row) => row.products.length > 0);
+            return {
+              category: {
+                _id: row.categoryId,
+                name: row.name,
+                slug: row.slug,
+                saleCount: row.saleCount
+              },
+              products: raw.map(shapeProductListItem)
+            };
+          })
+        )
+      ).filter((row) => row.products.length > 0);
 
-    ok(res, { rows });
+      return { rows };
+    });
+
+    setPublicApiCacheHeaders(res, { hit });
+    ok(res, payload);
   } catch (error) {
     console.error('Home category sales error:', error);
     fail(res, 500, error.message || 'Failed to fetch category sale rows');
@@ -488,39 +487,39 @@ router.get('/home-category-sales', async (req, res) => {
 router.get('/flash-sale', async (req, res) => {
   try {
     const limit = Math.min(64, Math.max(1, parseInt(req.query.limit, 10) || 32));
-    const raw = await Product.aggregate([
-      { $match: saleProductMatchFilter() },
-      {
-        $addFields: {
-          _saleDiscountPct: {
-            $multiply: [
-              {
-                $divide: [{ $subtract: ['$comparePrice', '$price'] }, '$comparePrice']
-              },
-              100
-            ]
+    const cacheKey = CACHE_KEYS.productsFlashSale(limit);
+    const { value: shaped, hit } = await getOrSet(cacheKey, async () => {
+      const raw = await Product.aggregate([
+        { $match: saleProductMatchFilter() },
+        {
+          $addFields: {
+            _saleDiscountPct: {
+              $multiply: [
+                {
+                  $divide: [{ $subtract: ['$comparePrice', '$price'] }, '$comparePrice']
+                },
+                100
+              ]
+            }
           }
-        }
-      },
-      { $sort: { _saleDiscountPct: -1, createdAt: -1 } },
-      { $limit: limit },
-      {
-        $lookup: {
-          from: 'categories',
-          localField: 'category',
-          foreignField: '_id',
-          as: '_categoryPop'
-        }
-      },
-      {
-        $addFields: {
-          category: { $arrayElemAt: ['$_categoryPop', 0] }
-        }
-      },
-      { $project: { _categoryPop: 0, _saleDiscountPct: 0 } }
-    ]);
+        },
+        { $sort: { _saleDiscountPct: -1, createdAt: -1 } },
+        { $limit: limit },
+        {
+          $lookup: {
+            from: 'categories',
+            localField: 'category',
+            foreignField: '_id',
+            as: '_categoryPop'
+          }
+        },
+        { $project: CARD_AGG_FINAL_PROJECT }
+      ]);
+      return raw.map(shapeProductListItem);
+    });
 
-    ok(res, raw.map(shapeProductDoc));
+    setPublicApiCacheHeaders(res, { hit });
+    ok(res, shaped);
   } catch (error) {
     console.error('Flash sale products error:', error);
     fail(res, 500, error.message || 'Failed to fetch flash sale products');
@@ -532,17 +531,22 @@ router.get('/flash-sale', async (req, res) => {
  */
 router.get('/featured', async (req, res) => {
   try {
-    const raw = await Product.find({
-      isPublished: true,
-      isFeatured: true,
-      ...productHasImageMongoMatch()
-    })
-      .sort({ createdAt: -1 })
-      .limit(8)
-      .populate('category', 'name slug')
-      .lean();
+    const { value: shaped, hit } = await getOrSet(CACHE_KEYS.PRODUCTS_FEATURED, async () => {
+      const raw = await Product.find({
+        isPublished: true,
+        isFeatured: true,
+        ...productHasImageMongoMatch()
+      })
+        .select(CARD_PRODUCT_SELECT)
+        .sort({ createdAt: -1 })
+        .limit(8)
+        .populate('category', 'name slug')
+        .lean();
+      return raw.map(shapeProductListItem);
+    });
 
-    ok(res, raw.map(shapeProductDoc));
+    setPublicApiCacheHeaders(res, { hit });
+    ok(res, shaped);
   } catch (error) {
     console.error('Featured products error:', error);
     fail(res, 500, error.message || 'Failed to fetch featured products');
@@ -567,7 +571,7 @@ router.get('/search', async (req, res) => {
     })
       .select('name slug')
       .sort({ name: 1 })
-      .limit(15)
+      .limit(12)
       .lean();
 
     ok(
@@ -646,6 +650,7 @@ router.get('/ai-search', async (req, res) => {
     const ids = result.items.map((x) => x.productId).filter(Boolean);
     const rows = ids.length
       ? await Product.find({ _id: { $in: ids }, isPublished: true, ...productHasImageMongoMatch() })
+          .select(CARD_PRODUCT_SELECT)
           .populate('category', 'name slug')
           .lean()
       : [];
@@ -656,7 +661,7 @@ router.get('/ai-search', async (req, res) => {
     logSearchQuery(req, { query: q, resultsCount: ordered.length, source: 'ai-search' }).catch(() => {});
 
     ok(res, {
-      products: ordered.map(shapeProductDoc),
+      products: ordered.map(shapeProductListItem),
       debug:
         process.env.NODE_ENV === 'development'
           ? { scores: result.items }
@@ -922,6 +927,7 @@ router.post(
         .exec();
 
       ok(res, shapeProductDoc(populated), 201, { message: 'Product created' });
+      invalidateCatalogCache();
 
       // async embedding generation (never block response)
       try {
@@ -982,6 +988,7 @@ router.patch('/:id/stock', requireAdmin, async (req, res) => {
       .populate('category', 'name slug')
       .lean();
     ok(res, shapeProductDoc(updated), 200, { message: 'Stock updated' });
+    invalidateCatalogCache();
   } catch (error) {
     if (error.name === 'ValidationError') {
       return fail(res, 400, 'Validation failed', formatMongooseValidation(error));
@@ -1305,6 +1312,7 @@ router.put(
         .populate('category', 'name slug')
         .lean();
       ok(res, shapeProductDoc(updated), 200, { message: 'Product updated' });
+      invalidateCatalogCache();
 
       // async embedding refresh (never block response)
       try {
@@ -1494,6 +1502,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     if (!hard) {
       product.isPublished = false;
       await product.save();
+      invalidateCatalogCache();
       return res.status(200).json({
         success: true,
         message: 'Product unpublished (soft delete)',
@@ -1504,6 +1513,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     await Review.deleteMany({ product: product._id });
     await deleteProductImagesFromCloudinary(product.images || []);
     await Product.deleteOne({ _id: product._id });
+    invalidateCatalogCache();
 
     res.status(200).json({
       success: true,
@@ -1580,11 +1590,13 @@ router.get('/:slug', attachJwtUserSilent, async (req, res) => {
             _id: { $ne: raw._id },
             ...productHasImageMongoMatch()
           })
+            .select(CARD_PRODUCT_SELECT)
             .sort({ createdAt: -1 })
             .limit(12)
             .populate('category', 'name slug')
             .lean()
         : await Product.find({ isPublished: true, _id: { $ne: raw._id }, ...productHasImageMongoMatch() })
+            .select(CARD_PRODUCT_SELECT)
             .sort({ createdAt: -1 })
             .limit(12)
             .populate('category', 'name slug')
@@ -1603,7 +1615,7 @@ router.get('/:slug', attachJwtUserSilent, async (req, res) => {
         ...base,
         categoryName,
         categorySlug,
-        relatedProducts: relatedRaw.map(shapeProductDoc)
+        relatedProducts: relatedRaw.map(shapeProductListItem)
       });
     }
 
@@ -1626,8 +1638,10 @@ router.get('/:slug', attachJwtUserSilent, async (req, res) => {
         ? Product.find({
             isPublished: true,
             category: categoryId,
-            _id: { $ne: raw._id }
+            _id: { $ne: raw._id },
+            ...productHasImageMongoMatch()
           })
+            .select(CARD_PRODUCT_SELECT)
             .sort({ createdAt: -1 })
             .limit(12)
             .populate('category', 'name slug')
@@ -1666,7 +1680,7 @@ router.get('/:slug', attachJwtUserSilent, async (req, res) => {
       sku: raw.sku || '',
       reviews,
       ratingHistogram,
-      relatedProducts: relatedRaw.map(shapeProductDoc),
+      relatedProducts: relatedRaw.map(shapeProductListItem),
       reviewEligible,
       userHasReview
     });

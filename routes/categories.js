@@ -9,6 +9,9 @@ const requireAdmin = require('../middleware/requireAdmin');
 const { adminOrStaffPermission } = require('../middleware/staffAuth');
 const { uploadImageBuffer, deleteByPublicId } = require('../lib/cloudinary');
 const { publishedProductCountStages } = require('../lib/syncCategoryVisibility');
+const { getOrSet, CACHE_KEYS } = require('../lib/apiCache');
+const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
+const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
 
 const router = express.Router();
 
@@ -52,13 +55,16 @@ async function slugExists(slug, excludeId) {
 router.get('/', async (req, res) => {
   try {
     const productColl = Product.collection.name;
-    const rows = await Category.aggregate([
-      { $match: { isActive: true } },
-      ...publishedProductCountStages(productColl),
-      { $match: { productCount: { $gt: 0 } } },
-      { $sort: { displayOrder: 1, name: 1 } }
-    ]);
+    const { value: rows, hit } = await getOrSet(CACHE_KEYS.CATEGORIES_LIST, async () =>
+      Category.aggregate([
+        { $match: { isActive: true } },
+        ...publishedProductCountStages(productColl),
+        { $match: { productCount: { $gt: 0 } } },
+        { $sort: { displayOrder: 1, name: 1 } }
+      ])
+    );
 
+    setPublicApiCacheHeaders(res, { hit });
     ok(res, rows);
   } catch (err) {
     console.error('List categories error:', err);
@@ -109,6 +115,7 @@ router.put('/reorder', ...adminOrStaffPermission('manageCategories'), async (req
     }
 
     await Category.bulkWrite(bulk);
+    invalidateCatalogCache();
     ok(res, { updated: items.length }, 200, { message: 'Display order updated' });
   } catch (err) {
     console.error('Reorder categories error:', err);
@@ -201,6 +208,7 @@ router.post('/', ...adminOrStaffPermission('manageCategories'), upload.single('i
       { $project: { products: 0 } }
     ]);
 
+    invalidateCatalogCache();
     ok(res, withCount[0] || doc.toObject(), 201, { message: 'Category created' });
   } catch (err) {
     if (err.code === 11000) {
@@ -217,25 +225,30 @@ router.post('/', ...adminOrStaffPermission('manageCategories'), upload.single('i
 router.get('/:slug', async (req, res) => {
   try {
     const slug = String(req.params.slug).toLowerCase().trim();
-    const rows = await Category.aggregate([
-      { $match: { slug, isActive: true } },
-      {
-        $lookup: {
-          from: Product.collection.name,
-          localField: '_id',
-          foreignField: 'category',
-          as: 'products'
-        }
-      },
-      { $addFields: { productCount: { $size: '$products' } } },
-      { $project: { products: 0 } }
-    ]);
+    const cacheKey = CACHE_KEYS.categorySlug(slug);
+    const { value: row, hit } = await getOrSet(cacheKey, async () => {
+      const rows = await Category.aggregate([
+        { $match: { slug, isActive: true } },
+        {
+          $lookup: {
+            from: Product.collection.name,
+            localField: '_id',
+            foreignField: 'category',
+            as: 'products'
+          }
+        },
+        { $addFields: { productCount: { $size: '$products' } } },
+        { $project: { products: 0 } }
+      ]);
+      return rows[0] || null;
+    });
 
-    if (!rows.length) {
+    if (!row) {
       return fail(res, 404, 'Category not found');
     }
 
-    ok(res, rows[0]);
+    setPublicApiCacheHeaders(res, { hit });
+    ok(res, row);
   } catch (err) {
     console.error('Get category error:', err);
     fail(res, 500, err.message || 'Failed to fetch category');
@@ -355,6 +368,7 @@ router.put('/:id', ...adminOrStaffPermission('manageCategories'), optionalImageU
       { $project: { products: 0 } }
     ]);
 
+    invalidateCatalogCache();
     ok(res, withCount[0] || category.toObject(), 200, { message: 'Category updated' });
   } catch (err) {
     if (err.code === 11000) {
@@ -406,6 +420,7 @@ router.delete('/:id', ...adminOrStaffPermission('manageCategories'), async (req,
       }
     }
 
+    invalidateCatalogCache();
     res.status(200).json({
       success: true,
       message: 'Category deleted',

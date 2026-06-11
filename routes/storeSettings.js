@@ -1,5 +1,6 @@
 const express = require('express');
 const { getStoreSettings } = require('../services/storeSettings');
+const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
 
 const router = express.Router();
 
@@ -7,7 +8,7 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   try {
     const data = await getStoreSettings();
-    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    setPublicApiCacheHeaders(res);
     res.json({ success: true, data });
   } catch (error) {
     console.error('store-settings GET error:', error);

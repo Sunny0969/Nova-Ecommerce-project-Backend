@@ -258,8 +258,13 @@ productSchema.pre('save', async function (next) {
 });
 
 productSchema.index({ category: 1, isPublished: 1 });
+productSchema.index({ category: 1, isPublished: 1, createdAt: -1 });
+productSchema.index({ category: 1, isPublished: 1, price: 1 });
+productSchema.index({ category: 1, name: 1 });
 productSchema.index({ isFeatured: 1, isPublished: 1, createdAt: -1 });
 productSchema.index({ isPublished: 1, numReviews: -1, ratings: -1 });
+productSchema.index({ isPublished: 1, createdAt: -1 });
+productSchema.index({ isPublished: 1, stock: 1, createdAt: -1 });
 productSchema.index({ approvalStatus: 1, createdAt: -1 });
 productSchema.index({ price: 1 });
 productSchema.index({ name: 'text', description: 'text', tags: 'text' });

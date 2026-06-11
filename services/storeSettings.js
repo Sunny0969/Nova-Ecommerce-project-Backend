@@ -1,6 +1,6 @@
 const StoreSettings = require('../models/StoreSettings');
-
-
+const { getOrSet, del, CACHE_KEYS } = require('../lib/apiCache');
+const { invalidateStoreSettingsCache } = require('../lib/invalidatePublicCache');
 
 const DEFAULTS = {
   freeShippingMin: 2026,
@@ -12,7 +12,10 @@ const DEFAULTS = {
   weightShippingThresholdKg: 1,
   shippingUpToThresholdKg: 300,
   shippingAdditionalPerKgOver: 150,
-  defaultProductWeightKg: 1
+  defaultProductWeightKg: 1,
+  walletCashbackEnabled: true,
+  walletCashbackMinOrder: 5000,
+  walletCashbackAmount: 500
 };
 
 function normalizeDoc(doc) {
@@ -43,6 +46,18 @@ function normalizeDoc(doc) {
     defaultProductWeightKg: Math.max(
       0.01,
       Number(doc.defaultProductWeightKg ?? DEFAULTS.defaultProductWeightKg)
+    ),
+    walletCashbackEnabled:
+      doc.walletCashbackEnabled !== undefined
+        ? Boolean(doc.walletCashbackEnabled)
+        : DEFAULTS.walletCashbackEnabled,
+    walletCashbackMinOrder: Math.max(
+      0,
+      Number(doc.walletCashbackMinOrder ?? DEFAULTS.walletCashbackMinOrder)
+    ),
+    walletCashbackAmount: Math.max(
+      0,
+      Number(doc.walletCashbackAmount ?? DEFAULTS.walletCashbackAmount)
     )
   };
 
@@ -72,19 +87,15 @@ function patchNumber(patch, current, key, { min = 0, max = null } = {}) {
  */
 
 async function getStoreSettings() {
-
-  let doc = await StoreSettings.findOne().lean();
-
-  if (!doc) {
-
-    await StoreSettings.create(DEFAULTS);
-
-    doc = await StoreSettings.findOne().lean();
-
-  }
-
-  return normalizeDoc(doc);
-
+  const { value } = await getOrSet(CACHE_KEYS.STORE_SETTINGS, async () => {
+    let doc = await StoreSettings.findOne().lean();
+    if (!doc) {
+      await StoreSettings.create(DEFAULTS);
+      doc = await StoreSettings.findOne().lean();
+    }
+    return normalizeDoc(doc);
+  });
+  return value;
 }
 
 
@@ -113,10 +124,18 @@ async function updateStoreSettings(patch) {
     }),
     shippingUpToThresholdKg: patchNumber(patch, current, 'shippingUpToThresholdKg'),
     shippingAdditionalPerKgOver: patchNumber(patch, current, 'shippingAdditionalPerKgOver'),
-    defaultProductWeightKg: patchNumber(patch, current, 'defaultProductWeightKg', { min: 0.01 })
+    defaultProductWeightKg: patchNumber(patch, current, 'defaultProductWeightKg', { min: 0.01 }),
+    walletCashbackEnabled:
+      patch.walletCashbackEnabled != null
+        ? patch.walletCashbackEnabled === true || patch.walletCashbackEnabled === 'true'
+        : current.walletCashbackEnabled,
+    walletCashbackMinOrder: patchNumber(patch, current, 'walletCashbackMinOrder'),
+    walletCashbackAmount: patchNumber(patch, current, 'walletCashbackAmount')
   };
 
   await StoreSettings.findOneAndUpdate({}, { $set: next }, { upsert: true, new: true });
+  invalidateStoreSettingsCache();
+  del(CACHE_KEYS.STORE_SETTINGS);
   return getStoreSettings();
 }
 
