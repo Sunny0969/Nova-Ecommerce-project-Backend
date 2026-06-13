@@ -12,6 +12,7 @@ const { publishedProductCountStages } = require('../lib/syncCategoryVisibility')
 const { getOrSet, CACHE_KEYS } = require('../lib/apiCache');
 const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
 const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
+const { sortCategoriesAlphabetically } = require('../lib/sortCategories');
 
 const router = express.Router();
 
@@ -60,12 +61,12 @@ router.get('/', async (req, res) => {
         { $match: { isActive: true } },
         ...publishedProductCountStages(productColl),
         { $match: { productCount: { $gt: 0 } } },
-        { $sort: { displayOrder: 1, name: 1 } }
-      ])
+        { $sort: { name: 1 } }
+      ]).collation({ locale: 'en', strength: 2 })
     );
 
     setPublicApiCacheHeaders(res, { hit });
-    ok(res, rows);
+    ok(res, sortCategoriesAlphabetically(rows));
   } catch (err) {
     console.error('List categories error:', err);
     fail(res, 500, err.message || 'Failed to list categories');

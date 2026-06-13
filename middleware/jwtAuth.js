@@ -1,16 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-
-function getJwtSecret() {
-  const s = process.env.JWT_SECRET;
-  if (!s) {
-    console.warn(
-      '[auth] JWT_SECRET is not set; using a dev-only default. Set JWT_SECRET in .env for production.'
-    );
-    return 'nova-shop-dev-jwt-secret-change-in-production';
-  }
-  return s;
-}
+const { getJwtSecret } = require('../lib/envSecurity');
 
 /**
  * @param {import('mongoose').Document} user

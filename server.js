@@ -1,4 +1,6 @@
 require('dotenv').config();
+const { assertSecureProductionEnv, getJwtSecret } = require('./lib/envSecurity');
+assertSecureProductionEnv();
 const {
   configureMongoDns,
   MONGOOSE_CONNECT_OPTS
@@ -122,8 +124,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.use(
   session({
-    secret:
-      process.env.JWT_SECRET || 'nova-shop-secret-key-change-in-production',
+    secret: getJwtSecret(),
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -228,6 +229,20 @@ app.use(
   requireJwtAuth,
   requireAdmin,
   require('./routes/admin/fraud')
+);
+
+app.use(
+  '/api/admin/blog/ai',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/aiBlog')
+);
+
+app.use(
+  '/api/admin/blogs',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/blogs')
 );
 
 /* ✅ ADMIN STAFF MANAGEMENT ONLY */
@@ -352,6 +367,20 @@ async function startServer() {
 
     const { startOrderEmailRetryWorker } = require('./services/orderEmailDelivery');
     startOrderEmailRetryWorker();
+
+    if (process.env.AI_BLOG_CRON_ENABLED === 'true') {
+      const { autoGenerateTrendingBlog } = require('./controllers/aiBlogController');
+      const intervalMs = Math.max(
+        60 * 60 * 1000,
+        Number(process.env.AI_BLOG_CRON_INTERVAL_MS) || 24 * 60 * 60 * 1000
+      );
+      setInterval(() => {
+        autoGenerateTrendingBlog().catch((err) => {
+          console.warn('[AI-BLOG] Cron run failed:', err.message);
+        });
+      }, intervalMs);
+      console.log(`[AI-BLOG] Cron enabled — every ${Math.round(intervalMs / 3600000)}h`);
+    }
 
     const httpServer = http.createServer(app);
     const io = new Server(httpServer, {

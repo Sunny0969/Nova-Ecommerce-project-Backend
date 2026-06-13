@@ -25,6 +25,7 @@ const { logSearchQuery, logSearchClick, getTrendingSearches } = require('../serv
 const { saleProductMatchFilter } = require('../lib/productSale');
 const { sanitizeProductDoc } = require('../lib/productDescription');
 const { productHasImageMongoMatch, productHasValidImage } = require('../lib/productImageFilter');
+const { getFakeDisplayRating, parseMinRatingFilter } = require('../lib/fakeReviews');
 const {
   CARD_PRODUCT_SELECT,
   CARD_AGG_FINAL_PROJECT,
@@ -223,7 +224,6 @@ async function buildListFilter(query) {
     category,
     minPrice,
     maxPrice,
-    rating,
     search,
     featured,
     inStock,
@@ -300,10 +300,7 @@ async function buildListFilter(query) {
     }
   }
 
-  const r = rating !== undefined && rating !== '' ? parseFloat(rating) : NaN;
-  if (Number.isFinite(r) && r >= 0 && r <= 5) {
-    and.push({ ratings: { $gte: r } });
-  }
+  // Rating filter uses display ratings (see GET / handler + fakeReviews.js).
 
   if (featured === 'true' || featured === true) {
     and.push({ isFeatured: true });
@@ -352,8 +349,28 @@ router.get('/', async (req, res) => {
   try {
     const { page, limit, skip, totalPages } = parseProductPagination(req.query);
     const sort = buildListSort(req.query.sort);
+    const minDisplayRating = parseMinRatingFilter(req.query.rating);
 
-    const filter = await buildListFilter(req.query);
+    let filter = await buildListFilter(req.query);
+
+    if (minDisplayRating != null) {
+      const baseFilter = await buildListFilter({ ...req.query, rating: undefined });
+      const candidates = await Product.find(baseFilter).select('_id slug name').lean();
+      const matchingIds = candidates
+        .filter((p) => getFakeDisplayRating(p) >= minDisplayRating)
+        .map((p) => p._id);
+
+      if (!matchingIds.length) {
+        return ok(res, {
+          products: [],
+          totalCount: 0,
+          totalPages: 0,
+          currentPage: page
+        });
+      }
+
+      filter = { $and: [...baseFilter.$and, { _id: { $in: matchingIds } }] };
+    }
 
     const [raw, totalCount] = await Promise.all([
       findProductsLean(filter, { sort, skip, limit }),

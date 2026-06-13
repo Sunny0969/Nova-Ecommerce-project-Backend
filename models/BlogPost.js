@@ -32,6 +32,21 @@ const blogPostSchema = new mongoose.Schema(
 
     tag: { type: String, default: '', trim: true },
 
+    /** SEO tags / internal search keywords (AI-generated). */
+    tags: [{ type: String, trim: true }],
+
+    /** Optional override for `<title>` / OG title. */
+    metaTitle: { type: String, default: '', maxlength: 120, trim: true },
+
+    /** Meta description (155 chars target). Falls back to `description`. */
+    metaDescription: { type: String, default: '', maxlength: 320, trim: true },
+
+    /** Pre-built JSON-LD string (BlogPosting) stored at generation time. */
+    schemaMarkup: { type: String, default: '' },
+
+    /** Primary SEO keyword used when generating the post. */
+    primaryKeyword: { type: String, default: '', trim: true },
+
     featuredImage: { type: String, default: '' },
     imageAlt: { type: String, default: '' },
 

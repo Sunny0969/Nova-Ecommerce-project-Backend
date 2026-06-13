@@ -100,7 +100,8 @@ async function formatCartResponse(cartDoc) {
     totals.discountAmount,
     'standard',
     settings,
-    cartWeightKg
+    cartWeightKg,
+    items
   );
 
   let couponSummary = null;

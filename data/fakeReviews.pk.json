@@ -1,0 +1,65 @@
+{
+  "names": [
+    "Ayesha Khan",
+    "Hina Malik",
+    "Sara Ahmed",
+    "Maryam Iqbal",
+    "Iqra Shah",
+    "Sana Fatima",
+    "Zainab Raza",
+    "Noor Hassan",
+    "Mehak Ali",
+    "Anum Sheikh",
+    "Ali Raza",
+    "Ahmed Khan",
+    "Usman Tariq",
+    "Bilal Ahmed",
+    "Hassan Ali",
+    "Fahad Malik",
+    "Hamza Khan",
+    "Saad Ahmed",
+    "Zeeshan Raza",
+    "Imran Shah",
+    "Areeba Aslam",
+    "Mahnoor Haider",
+    "Laiba Tariq",
+    "Komal Iqbal",
+    "Umar Farooq",
+    "Shahzaib Khan"
+  ],
+  "cities": [
+    "Karachi",
+    "Lahore",
+    "Islamabad",
+    "Rawalpindi",
+    "Faisalabad",
+    "Multan",
+    "Peshawar",
+    "Quetta",
+    "Sialkot",
+    "Hyderabad",
+    "Gujranwala"
+  ],
+  "templates": {
+    "2": [
+      "Delivery was okay, but the quality could be improved. Not fully satisfied.",
+      "Product is usable but not as expected. Packaging was fine, quality average.",
+      "Average experience — it works, but I expected better for the price."
+    ],
+    "3": [
+      "Overall okay for the price. Could be better, but acceptable.",
+      "Decent quality and looks fine. Satisfied, but not exceptional.",
+      "Good enough for daily use. Value is reasonable."
+    ],
+    "4": [
+      "Good quality and neat finishing. Delivery was on time. Recommended.",
+      "Value for money. Packaging was clean and product matches the photos.",
+      "Nice experience — build quality feels solid and performance is good."
+    ],
+    "5": [
+      "Excellent quality and premium feel. Highly recommended.",
+      "Perfect! Exactly as described and delivery was quick. Very satisfied.",
+      "Outstanding purchase — exceeded expectations. Will order again."
+    ]
+  }
+}

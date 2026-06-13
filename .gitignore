@@ -1,7 +1,13 @@
 # Secrets — never commit
 .env
 .env.local
-.env.*.local
+.env.*
+!.env.example
+
+# Credentials / keys
+*.pem
+*.key
+credentials.json
 
 # Dependencies
 node_modules/

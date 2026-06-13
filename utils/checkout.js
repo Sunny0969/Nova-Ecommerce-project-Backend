@@ -3,7 +3,7 @@ const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const { validateCouponForCart } = require('./cartCoupon');
 const { getStoreSettings } = require('../services/storeSettings');
-const { computeCartWeightKg, calculateWeightBasedShipping } = require('../lib/shippingWeight');
+const { computeCartWeightKg, resolveStandardShippingPrice, shouldUseFlatStandardShipping } = require('../lib/shippingWeight');
 
 const ITEMS_POPULATE = {
   path: 'items.product',
@@ -20,8 +20,9 @@ function round2(n) {
  * @param {string} deliveryOption
  * @param {object} settings — from getStoreSettings()
  * @param {number|null} [cartWeightKg] — total cart weight for weight-based standard shipping
+ * @param {Array|null} [cartLines] — cart lines for missing-weight / sub-threshold fallback
  */
-function calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg = null) {
+function calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg = null, cartLines = null) {
   const d = deliveryOption || 'standard';
   let shipping = 0;
   if (d === 'express') {
@@ -30,14 +31,17 @@ function calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg = 
   } else if (d === 'nextday') {
     const rate = Number(settings?.shippingNextDay);
     shipping = round2(Number.isFinite(rate) && rate >= 0 ? rate : 599);
-  } else if (settings?.weightShippingEnabled !== false && cartWeightKg != null) {
-    shipping = calculateWeightBasedShipping(cartWeightKg, settings);
+  } else if (settings?.weightShippingEnabled !== false) {
+    shipping = resolveStandardShippingPrice(cartLines, cartWeightKg, settings);
   } else {
     shipping = round2(Number(settings?.shippingStandard) ?? 299);
   }
 
   const freeMin = Number(settings?.freeShippingMin);
+  const skipFreeShipping =
+    d === 'standard' && cartLines && shouldUseFlatStandardShipping(cartLines, settings);
   if (
+    !skipFreeShipping &&
     d === 'standard' &&
     Number.isFinite(freeMin) &&
     freeMin > 0 &&
@@ -57,11 +61,12 @@ function calculateTaxPrice(subtotalAfterDiscount, settings) {
 /**
  * Preview totals for cart UI / checkout sidebar (must match buildCheckoutSnapshot).
  * @param {number|null} [cartWeightKg]
+ * @param {Array|null} [cartLines]
  */
-function computeTotalsPreview(itemsPrice, discountAmount, deliveryOption, settings, cartWeightKg = null) {
+function computeTotalsPreview(itemsPrice, discountAmount, deliveryOption, settings, cartWeightKg = null, cartLines = null) {
   const disc = Math.min(Number(discountAmount) || 0, itemsPrice);
   const subAfterDisc = round2(Math.max(0, itemsPrice - disc));
-  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg);
+  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg, cartLines);
   const taxPrice = calculateTaxPrice(subAfterDisc, settings);
   const totalPrice = round2(Math.max(0, subAfterDisc + shippingPrice + taxPrice));
   return {
@@ -175,7 +180,7 @@ async function buildCheckoutSnapshot(userId, deliveryOption = 'standard') {
   const totals = cart.calculateTotals();
   const discountAmount = Number(totals.discountAmount) || 0;
   const cartWeightKg = computeCartWeightKg(cart.items, settings);
-  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg);
+  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg, cart.items);
   const subAfterDisc = round2(Math.max(0, itemsPrice - discountAmount));
   const taxPrice = calculateTaxPrice(subAfterDisc, settings);
   const totalPrice = round2(Math.max(0, subAfterDisc + shippingPrice + taxPrice));
@@ -261,7 +266,7 @@ async function buildGuestCheckoutSnapshot(guestItems, deliveryOption = 'standard
     return { product: p, quantity: Math.floor(Number(line.quantity)) };
   });
   const cartWeightKg = computeCartWeightKg(guestLines, settings);
-  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg);
+  const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg, guestLines);
   const subAfterDisc = round2(Math.max(0, itemsPrice - discountAmount));
   const taxPrice = calculateTaxPrice(subAfterDisc, settings);
   const totalPrice = round2(Math.max(0, subAfterDisc + shippingPrice + taxPrice));

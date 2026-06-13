@@ -184,7 +184,12 @@ router.post('/', requireAdmin, async (req, res) => {
       sortDate: body.sortDate ? new Date(body.sortDate) : undefined,
       status: body.status === 'draft' ? 'draft' : 'published',
       body: body.body,
-      sections: Array.isArray(body.sections) ? body.sections : undefined
+      sections: Array.isArray(body.sections) ? body.sections : undefined,
+      tags: Array.isArray(body.tags) ? body.tags : undefined,
+      metaTitle: body.metaTitle,
+      metaDescription: body.metaDescription,
+      schemaMarkup: body.schemaMarkup,
+      primaryKeyword: body.primaryKeyword
     };
 
     // Tidy optional fields
@@ -234,7 +239,12 @@ router.put('/:id', requireAdmin, async (req, res) => {
       sortDate: body.sortDate ? new Date(body.sortDate) : undefined,
       status: body.status === 'draft' ? 'draft' : 'published',
       body: body.body,
-      sections: Array.isArray(body.sections) ? body.sections : undefined
+      sections: Array.isArray(body.sections) ? body.sections : undefined,
+      tags: Array.isArray(body.tags) ? body.tags : undefined,
+      metaTitle: body.metaTitle,
+      metaDescription: body.metaDescription,
+      schemaMarkup: body.schemaMarkup,
+      primaryKeyword: body.primaryKeyword
     };
 
     // Remove undefined keys (so we don't accidentally overwrite)

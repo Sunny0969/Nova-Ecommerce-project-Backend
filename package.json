@@ -31,7 +31,9 @@
     "create:admin": "node scripts/createAdminUser.js",
     "test:email": "node scripts/testOrderEmail.js",
     "check:resend": "node scripts/checkResendSetup.js",
-    "sitemap:generate": "node scripts/generateSitemap.js"
+    "sitemap:generate": "node scripts/generateSitemap.js",
+    "audit:secrets": "node scripts/auditSecrets.js",
+    "blog:ai-generate": "node -e \"require('./controllers/aiBlogController').autoGenerateTrendingBlog().then(r=>{console.log(r);process.exit(r.created?0:1)}).catch(e=>{console.error(e);process.exit(1)})\""
   },
   "keywords": [
     "ecommerce",
@@ -42,6 +44,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@huggingface/inference": "^4.13.18",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.5.1",
     "compression": "^1.7.4",
