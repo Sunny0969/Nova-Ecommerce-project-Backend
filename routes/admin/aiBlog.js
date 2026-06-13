@@ -1,8 +1,15 @@
 const express = require('express');
 const requireAdmin = require('../../middleware/requireAdmin');
-const { autoGenerateTrendingBlog } = require('../../controllers/aiBlogController');
+const { autoGenerateTrendingBlog, getAiBlogConfigStatus } = require('../../controllers/aiBlogController');
 
 const router = express.Router();
+
+/**
+ * GET /api/admin/blog/ai/status — is Hugging Face configured? (no secrets returned)
+ */
+router.get('/status', requireAdmin, (req, res) => {
+  return res.json({ success: true, data: getAiBlogConfigStatus() });
+});
 
 /**
  * POST /api/admin/blog/ai/generate

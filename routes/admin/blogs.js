@@ -2,6 +2,16 @@ const express = require('express');
 const mongoose = require('mongoose');
 const BlogPost = require('../../models/BlogPost');
 const { regenerateSitemapAutopilot } = require('../../lib/regenerateSitemapAutopilot');
+const { runBlogContentAudit, auditBlogPostDocument } = require('../../lib/blogContentAudit');
+const {
+  getSiteOrigin,
+  getSiteName,
+  ensureInternalShopLinks,
+  extractSectionsFromHtml,
+  buildBlogPostingSchema,
+  estimateReadingMinutes
+} = require('../../lib/blogSeo');
+const { resolveBlogShopDestination } = require('../../lib/blogShopLink');
 
 const router = express.Router();
 
@@ -67,13 +77,102 @@ router.get('/stats', async (req, res) => {
 });
 
 /**
+ * PUT /api/admin/blogs/:id
+ * Update draft/published content after SEO audit validation.
+ */
+router.put('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return fail(res, 400, 'Invalid blog id');
+    }
+
+    const title = String(req.body.title || req.body.h1 || '').trim();
+    const metaTitle = String(req.body.metaTitle || '').trim();
+    const summary = String(req.body.summary ?? req.body.description ?? '').trim();
+    const content = String(req.body.content ?? req.body.body ?? '').trim();
+
+    const audit = runBlogContentAudit({ title, metaTitle, summary, content });
+    if (!audit.ok) {
+      return fail(res, 400, audit.message);
+    }
+
+    const existing = await BlogPost.findById(id).lean();
+    if (!existing) {
+      return fail(res, 404, 'Blog post not found');
+    }
+
+    const bodyHtml = ensureInternalShopLinks(content, existing.destinationUrl || '/shop');
+    const sections = extractSectionsFromHtml(bodyHtml);
+    const resolvedMetaTitle = metaTitle.slice(0, 120);
+    const canonicalUrl = `${getSiteOrigin()}/blog/${encodeURIComponent(existing.slug)}`;
+    const schemaObject = buildBlogPostingSchema({
+      title,
+      summary,
+      slug: existing.slug,
+      featuredImage: existing.featuredImage,
+      datePublished: (existing.dateISO || new Date()).toISOString(),
+      canonicalUrl
+    });
+
+    const shopDest = await resolveBlogShopDestination({
+      blogCategory: existing.category,
+      tags: existing.tags,
+      primaryKeyword: existing.primaryKeyword,
+      currentLabel: existing.destinationLabel,
+      currentUrl: existing.destinationUrl
+    });
+
+    const post = await BlogPost.findByIdAndUpdate(
+      id,
+      {
+        title: title.slice(0, 200),
+        description: summary.slice(0, 320),
+        metaTitle: resolvedMetaTitle,
+        metaDescription: summary.slice(0, 320),
+        body: bodyHtml,
+        sections: sections.length ? sections : [],
+        readingMinutes: estimateReadingMinutes(bodyHtml),
+        schemaMarkup: JSON.stringify(schemaObject),
+        destinationLabel: shopDest.destinationLabel,
+        destinationUrl: shopDest.destinationUrl
+      },
+      { new: true, runValidators: true }
+    ).lean();
+
+    if (existing.status === 'published') {
+      queueSitemapRefresh();
+    }
+
+    return ok(res, { post, message: 'Content audited and saved' });
+  } catch (err) {
+    return fail(res, 500, err.message || 'Content update failed');
+  }
+});
+
+/**
  * PUT /api/admin/blogs/:id/publish
+ * Publish only if stored content passes the SEO audit gatekeeper.
  */
 router.put('/:id/publish', async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) {
       return fail(res, 400, 'Invalid blog id');
+    }
+
+    const draft = await BlogPost.findById(id).lean();
+    if (!draft) {
+      return fail(res, 404, 'Blog post not found');
+    }
+
+    const audit = auditBlogPostDocument(draft, { siteName: getSiteName() });
+    if (!audit.ok) {
+      return fail(
+        res,
+        400,
+        `${audit.message} Open Audit & Editor, fix issues, Save & validate, then publish.`
+      );
     }
 
     const post = await BlogPost.findByIdAndUpdate(
@@ -87,6 +186,24 @@ router.put('/:id/publish', async (req, res) => {
 
     if (!post) {
       return fail(res, 404, 'Blog post not found');
+    }
+
+    const shopDest = await resolveBlogShopDestination({
+      blogCategory: post.category,
+      tags: post.tags,
+      primaryKeyword: post.primaryKeyword,
+      currentLabel: post.destinationLabel,
+      currentUrl: post.destinationUrl
+    });
+
+    if (
+      shopDest.destinationUrl !== post.destinationUrl ||
+      shopDest.destinationLabel !== post.destinationLabel
+    ) {
+      await BlogPost.findByIdAndUpdate(id, {
+        destinationLabel: shopDest.destinationLabel,
+        destinationUrl: shopDest.destinationUrl
+      });
     }
 
     queueSitemapRefresh();

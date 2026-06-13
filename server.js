@@ -1,6 +1,17 @@
 require('dotenv').config();
 const { assertSecureProductionEnv, getJwtSecret } = require('./lib/envSecurity');
+const { getAiBlogConfigStatus } = require('./controllers/aiBlogController');
 assertSecureProductionEnv();
+
+const hfBlog = getAiBlogConfigStatus();
+if (hfBlog.configured) {
+  console.log(`[AI-BLOG] Hugging Face ready (model: ${hfBlog.model})`);
+} else {
+  console.warn(
+    '[AI-BLOG] HUGGINGFACE_API_KEY is not set — AI blog generation disabled. ' +
+      'Add it to Railway Variables (backend service) or backend/.env for localhost.'
+  );
+}
 const {
   configureMongoDns,
   MONGOOSE_CONNECT_OPTS

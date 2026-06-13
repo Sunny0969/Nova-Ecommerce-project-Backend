@@ -101,7 +101,10 @@ router.get('/posts/:slug', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Blog post not found' });
     }
 
-    return res.json({ success: true, post });
+    const { enrichBlogPost } = require('../lib/blogShopLink');
+    const enriched = await enrichBlogPost(post);
+
+    return res.json({ success: true, post: enriched });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -141,7 +144,10 @@ router.get('/:slug', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Blog post not found' });
     }
 
-    return res.json({ success: true, post });
+    const { enrichBlogPost } = require('../lib/blogShopLink');
+    const enriched = await enrichBlogPost(post);
+
+    return res.json({ success: true, post: enriched });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
