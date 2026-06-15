@@ -14,6 +14,7 @@ const mongoose = require('mongoose');
 const Category = require('../models/Category');
 const Product = require('../models/Product');
 const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
+const { regenerateSitemapAutopilot } = require('../lib/regenerateSitemapAutopilot');
 
 const ACTIVE_SLUGS = [
   'sauces-dressings-seasonings',
@@ -69,6 +70,37 @@ async function main() {
   });
 
   invalidateCatalogCache();
+
+  const sitemap = await regenerateSitemapAutopilot();
+  if (sitemap.ok) {
+    console.log(`[sitemap] ${sitemap.urlCount} URLs written`);
+  } else {
+    console.warn('[sitemap] regeneration failed:', sitemap.error);
+  }
+
+  const apiBase = String(
+    process.env.PUBLIC_API_URL ||
+      process.env.REACT_APP_API_URL ||
+      'https://nova-ecommerce-project-backend-production.up.railway.app'
+  ).replace(/\/+$/, '');
+  const flushSecret = String(process.env.CACHE_FLUSH_SECRET || '').trim();
+  if (flushSecret) {
+    try {
+      const res = await fetch(`${apiBase}/api/internal/cache/flush`, {
+        method: 'POST',
+        headers: { 'X-Cache-Flush-Secret': flushSecret }
+      });
+      const body = await res.json().catch(() => ({}));
+      console.log('[cache]', res.ok ? 'Production API cache cleared' : body.message || res.status);
+    } catch (err) {
+      console.warn('[cache] Could not flush production cache:', err.message);
+      console.warn('[cache] Restart the Railway backend service or wait up to 1 hour for cache TTL.');
+    }
+  } else {
+    console.warn(
+      '[cache] Set CACHE_FLUSH_SECRET in .env and Railway, then re-run — or restart Railway backend to clear stale category/product cache.'
+    );
+  }
 
   console.log('\nDone.', {
     activeCategories: activated,

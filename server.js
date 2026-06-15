@@ -176,6 +176,7 @@ app.use('/api/blog', require('./routes/blog'));
 app.use('/api/public', require('./routes/public'));
 app.use('/api/seo', require('./routes/seo'));
 app.use('/api/meta', require('./routes/meta'));
+app.use('/api/internal/cache', require('./routes/internal/cache'));
 
 /* ============================
    AUTH REQUIRED ROUTES

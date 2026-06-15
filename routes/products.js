@@ -36,6 +36,7 @@ const { shapeProductListItem } = require('../lib/productListShape');
 const { getOrSet, CACHE_KEYS } = require('../lib/apiCache');
 const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
 const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
+const { activeCategoryProductFilter } = require('../lib/activeCategories');
 
 const router = express.Router();
 
@@ -230,7 +231,7 @@ async function buildListFilter(query) {
     onSale
   } = query;
 
-  const and = [{ isPublished: true }, productHasImageMongoMatch()];
+  const and = [{ isPublished: true }, productHasImageMongoMatch(), await activeCategoryProductFilter()];
 
   const q = String(search || '').trim();
   if (q) {
@@ -258,14 +259,14 @@ async function buildListFilter(query) {
   })();
 
   if (slugList.length === 1) {
-    const cat = await Category.findOne({ slug: slugList[0] }).select('_id').lean();
+    const cat = await Category.findOne({ slug: slugList[0], isActive: true }).select('_id').lean();
     if (!cat) {
       and.push({ _id: { $in: [] } });
     } else {
       and.push({ category: cat._id });
     }
   } else if (slugList.length > 1) {
-    const cats = await Category.find({ slug: { $in: slugList } }).select('_id').lean();
+    const cats = await Category.find({ slug: { $in: slugList }, isActive: true }).select('_id').lean();
     const ids = cats.map((c) => c._id);
     if (!ids.length) {
       and.push({ _id: { $in: [] } });
@@ -506,8 +507,9 @@ router.get('/flash-sale', async (req, res) => {
     const limit = Math.min(64, Math.max(1, parseInt(req.query.limit, 10) || 32));
     const cacheKey = CACHE_KEYS.productsFlashSale(limit);
     const { value: shaped, hit } = await getOrSet(cacheKey, async () => {
+      const activeIds = (await activeCategoryProductFilter()).category.$in;
       const raw = await Product.aggregate([
-        { $match: saleProductMatchFilter() },
+        { $match: { ...saleProductMatchFilter(), category: { $in: activeIds } } },
         {
           $addFields: {
             _saleDiscountPct: {
@@ -549,10 +551,12 @@ router.get('/flash-sale', async (req, res) => {
 router.get('/featured', async (req, res) => {
   try {
     const { value: shaped, hit } = await getOrSet(CACHE_KEYS.PRODUCTS_FEATURED, async () => {
+      const activeFilter = await activeCategoryProductFilter();
       const raw = await Product.find({
         isPublished: true,
         isFeatured: true,
-        ...productHasImageMongoMatch()
+        ...productHasImageMongoMatch(),
+        ...activeFilter
       })
         .select(CARD_PRODUCT_SELECT)
         .sort({ createdAt: -1 })
@@ -581,10 +585,12 @@ router.get('/search', async (req, res) => {
     }
 
     const rx = new RegExp(escapeRegex(q), 'i');
+    const activeFilter = await activeCategoryProductFilter();
     const rows = await Product.find({
       isPublished: true,
       name: rx,
-      ...productHasImageMongoMatch()
+      ...productHasImageMongoMatch(),
+      ...activeFilter
     })
       .select('name slug')
       .sort({ name: 1 })
@@ -1588,14 +1594,19 @@ router.get('/:slug', attachJwtUserSilent, async (req, res) => {
     const slug = String(req.params.slug).toLowerCase().trim();
 
     const raw = await Product.findOne({ slug })
-      .populate('category', 'name slug')
+      .populate('category', 'name slug isActive')
       .lean();
 
     if (!raw) {
       return fail(res, 404, 'Product not found');
     }
 
-    if (!raw.isPublished || !productHasValidImage(raw)) {
+    const categoryInactive =
+      typeof raw.category === 'object' &&
+      raw.category != null &&
+      raw.category.isActive === false;
+
+    if (!raw.isPublished || !productHasValidImage(raw) || categoryInactive) {
       const categoryId =
         typeof raw.category === 'object' && raw.category?._id
           ? raw.category._id
