@@ -14,7 +14,8 @@ const {
   ADMIN_LIST_SELECT,
   parseProductPagination,
   ADMIN_LIST_DEFAULT_LIMIT,
-  ADMIN_LIST_MAX_LIMIT
+  ADMIN_LIST_MAX_LIMIT,
+  buildProductCategoryFilter
 } = require('../../lib/productQueries');
 const { invalidateCatalogCache } = require('../../lib/invalidatePublicCache');
 
@@ -348,21 +349,8 @@ router.get('/', async (req, res) => {
     else if (status === 'draft' || status === 'unpublished') and.push({ isPublished: false });
 
     const rawCat = req.query.category;
-    if (rawCat && String(rawCat).toLowerCase() !== 'all') {
-      const catStr = String(rawCat).trim();
-      if (strictMongoId(catStr)) {
-        and.push({ category: catStr });
-      } else {
-        const cat = await Category.findOne({
-          slug: catStr.toLowerCase()
-        }).select('_id');
-        if (cat) {
-          and.push({
-            $or: [{ category: cat._id }, { category: catStr.toLowerCase() }]
-          });
-        } else and.push({ _id: { $in: [] } });
-      }
-    }
+    const categoryFilter = await buildProductCategoryFilter(rawCat);
+    if (categoryFilter) and.push(categoryFilter);
 
     const filter = and.length ? { $and: and } : {};
 

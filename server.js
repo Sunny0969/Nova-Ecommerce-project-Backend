@@ -318,7 +318,7 @@ const frontendIndexPath =
 if (frontendIndexPath) {
   app.use(createCachedStaticMiddleware(frontendBuildPath));
   app.get('*', createSpaFallbackHandler(frontendIndexPath));
-  console.log('[static] Serving frontend build with 6-month asset cache:', frontendBuildPath);
+  console.log('[static] Serving frontend build with 1-year immutable asset cache:', frontendBuildPath);
 }
 
 app.use((req, res) => {

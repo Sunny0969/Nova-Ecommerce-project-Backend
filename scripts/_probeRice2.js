@@ -1,0 +1,11 @@
+const fs = require('fs');
+const h = fs.readFileSync('C:/Users/PC/Downloads/r.htm', 'utf8');
+console.log('size', h.length);
+console.log('ItemList', (h.match(/ItemList/g) || []).length);
+console.log('ld+json scripts', [...h.matchAll(/application\/ld\+json/g)].length);
+console.log('og:url', h.match(/og:url" content="([^"]+)"/)?.[1]?.slice(0, 120));
+console.log('breadcrumb span', h.match(/rgb\(2, 55, 136\)[^<]{0,80}/)?.[0]);
+const names = [...h.matchAll(/\\"title\\":\\"([^\\]+)\\"/g)].slice(0, 15).map((m) => m[1]);
+console.log('RSC titles sample:', names);
+const prices = [...h.matchAll(/\\"actualPrice\\":(\d+)/g)].slice(0, 10);
+console.log('actualPrice count', (h.match(/actualPrice/g) || []).length);

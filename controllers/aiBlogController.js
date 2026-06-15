@@ -5,11 +5,13 @@ const {
   getSiteOrigin,
   getSiteName,
   estimateReadingMinutes,
+  countWordsInHtml,
+  MIN_BLOG_WORDS,
   parseJsonFromModel,
   ensureInternalShopLinks,
   extractSectionsFromHtml,
   buildBlogPostingSchema,
-  defaultFeaturedImage,
+  pickUniqueFeaturedImage,
   mapTags
 } = require('../lib/blogSeo');
 const { resolveBlogShopDestination } = require('../lib/blogShopLink');
@@ -53,7 +55,7 @@ You MUST strictly follow this Content Audit Checklist:
 2. STRUCTURE & HEADINGS RULES:
 - Output format MUST be strictly HTML inside the JSON "content" string.
 - Do NOT include <h1> in "content" — the page H1 comes from "title" only.
-- Use logical <h2> sections covering exactly: Overview, Cost/Price Breakdown Ranges, Product Comparisons, and Buyer Types/Real-life Household Examples.
+- Use 6 to 8 substantial <h2> sections: Overview, Cost/Price Breakdown Ranges, Product Comparisons, Buyer Types/Real-life Household Examples, Practical Tips, and FAQs.
 - Include a dedicated "FAQs" section as an <h2> at the end with exactly 4 to 5 frequently asked questions. Each FAQ answer must be 3-5 lines max, helpful, and neutral.
 - Use <h3> only for sub-explanations. Paragraphs must be short: 2 to 4 lines max using simple, professional English (active voice).
 
@@ -61,7 +63,12 @@ You MUST strictly follow this Content Audit Checklist:
 - Include exactly one structural HTML <table> comparing grocery options or budget vs premium tier choices to support the business angle.
 - Use bullet points (<ul> and <li>) naturally for quick takeaways.
 
-4. FACTUAL & ECOMMERCE PROTECTION RULES:
+4. LENGTH (CRITICAL):
+- The "content" HTML body MUST contain at least ${MIN_BLOG_WORDS} words of readable text (excluding HTML tags).
+- Write long-form, in-depth sections with practical examples, household scenarios, and Pakistan-specific context.
+- Each section should have multiple <p> paragraphs (not one-liners). FAQs alone should not carry most of the word count.
+
+5. FACTUAL & ECOMMERCE PROTECTION RULES:
 - Never use exact fixed prices. Always use realistic Pakistani Rupee (Rs.) ranges.
 - Avoid clickbait promises like "cheap", "best", "guaranteed". Content must feel safe, informative, and expert-written.
 - Focus on convenience, delivery speed, and time-saving aspects of ordering online.
@@ -81,19 +88,32 @@ The response must be strictly a valid, raw JSON object without markdown formatti
 }`;
 }
 
-async function requestBlogJsonFromHf(client) {
+async function requestBlogJsonFromHf(client, { expandPrior = null } = {}) {
+  const messages = [
+    {
+      role: 'system',
+      content:
+        `You are an Elite E-commerce SEO Specialist aligned with Google Search Central 2026 Helpful Content & E-E-A-T guidelines. Output only valid JSON matching the user schema. No markdown fences, no commentary, no extra keys. Blog "content" must be at least ${MIN_BLOG_WORDS} words.`
+    },
+    { role: 'user', content: buildSeoPrompt() }
+  ];
+
+  if (expandPrior) {
+    const priorWords = countWordsInHtml(expandPrior.content);
+    messages.push(
+      { role: 'assistant', content: JSON.stringify(expandPrior) },
+      {
+        role: 'user',
+        content: `Your draft is only ${priorWords} words. Expand the "content" field to at least ${MIN_BLOG_WORDS} words of substantive HTML. Keep the same JSON keys, title intent, and SEO rules. Add more <h2> sections, detailed paragraphs, and Pakistan-specific examples. Return the complete updated JSON only.`
+      }
+    );
+  }
+
   const response = await client.chatCompletion({
     model: DEFAULT_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You are an Elite E-commerce SEO Specialist aligned with Google Search Central 2026 Helpful Content & E-E-A-T guidelines. Output only valid JSON matching the user schema. No markdown fences, no commentary, no extra keys.'
-      },
-      { role: 'user', content: buildSeoPrompt() }
-    ],
+    messages,
     max_tokens: 8192,
-    temperature: 0.65
+    temperature: expandPrior ? 0.55 : 0.65
   });
 
   const content = response?.choices?.[0]?.message?.content;
@@ -101,6 +121,28 @@ async function requestBlogJsonFromHf(client) {
     throw new Error('Hugging Face returned an empty response');
   }
   return parseJsonFromModel(content);
+}
+
+async function requestBlogJsonWithMinWords(client) {
+  let rawJson = await requestBlogJsonFromHf(client);
+  let words = countWordsInHtml(rawJson.content);
+
+  if (words < MIN_BLOG_WORDS) {
+    console.log(
+      `[AI-BLOG] Draft too short (${words}/${MIN_BLOG_WORDS} words) — requesting expansion…`
+    );
+    rawJson = await requestBlogJsonFromHf(client, { expandPrior: rawJson });
+    words = countWordsInHtml(rawJson.content);
+  }
+
+  if (words < MIN_BLOG_WORDS) {
+    throw new Error(
+      `Generated blog is too short (${words} words). Minimum is ${MIN_BLOG_WORDS}. Try generating again.`
+    );
+  }
+
+  console.log(`[AI-BLOG] Draft word count: ${words}`);
+  return rawJson;
 }
 
 async function persistBlogDraft(rawJson) {
@@ -134,7 +176,11 @@ async function persistBlogDraft(rawJson) {
   const sections = extractSectionsFromHtml(contentHtml);
   const summary = String(rawJson.summary || '').trim().slice(0, 320);
   const title = String(rawJson.title || '').trim().slice(0, 200);
-  const featuredImage = defaultFeaturedImage(category);
+  const featuredImage = await pickUniqueFeaturedImage(BlogPost, {
+    slug: slugified,
+    category,
+    primaryKeyword
+  });
   const dateISO = new Date();
   const canonicalUrl = `${getSiteOrigin()}/blog/${encodeURIComponent(slugified)}`;
 
@@ -188,7 +234,7 @@ async function autoGenerateTrendingBlog() {
 
   try {
     console.log(`[AI-BLOG] Generating draft via Hugging Face (${DEFAULT_MODEL})…`);
-    const rawJson = await requestBlogJsonFromHf(client);
+    const rawJson = await requestBlogJsonWithMinWords(client);
     return await persistBlogDraft(rawJson);
   } catch (error) {
     console.error('[AI-BLOG] Hugging Face generation error:', error.message);

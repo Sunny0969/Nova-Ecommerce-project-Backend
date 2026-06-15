@@ -6,8 +6,13 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Coupon = require('../../models/Coupon');
 const Cart = require('../../models/Cart');
+const { del, CACHE_KEYS } = require('../../lib/apiCache');
 
 const router = express.Router();
+
+function invalidatePromoTickerCache() {
+  del(CACHE_KEYS.PUBLIC_PROMO_TICKER);
+}
 
 function ok(res, status, payload) {
   res.status(status).json({ success: true, ...payload });
@@ -177,6 +182,7 @@ router.post('/', async (req, res) => {
     });
 
     await doc.save();
+    invalidatePromoTickerCache();
     const populated = await Coupon.findById(doc._id)
       .populate({ path: 'appliesTo.categories', select: 'name slug' })
       .populate({ path: 'appliesTo.products', select: 'name slug price' })
@@ -215,6 +221,7 @@ router.patch('/:id/toggle', async (req, res) => {
 
     coupon.isActive = !coupon.isActive;
     await coupon.save();
+    invalidatePromoTickerCache();
 
     const populated = await Coupon.findById(coupon._id)
       .populate({ path: 'appliesTo.categories', select: 'name slug' })
@@ -270,6 +277,7 @@ router.put('/:id', async (req, res) => {
     }
 
     await coupon.save();
+    invalidatePromoTickerCache();
 
     const populated = await Coupon.findById(coupon._id)
       .populate({ path: 'appliesTo.categories', select: 'name slug' })
@@ -312,6 +320,7 @@ router.delete('/:id', async (req, res) => {
       { $set: { coupon: null, discountAmount: 0 } }
     );
     await Coupon.deleteOne({ _id: id });
+    invalidatePromoTickerCache();
 
     return ok(res, 200, {
       message: 'Coupon deleted',

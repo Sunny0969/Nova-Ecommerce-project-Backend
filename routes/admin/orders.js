@@ -2,7 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Order = require('../../models/Order');
 const User = require('../../models/User');
-const { sendOrderShippedEmail } = require('../../lib/email');
+const { sendOrderStatusUpdateEmail, customerEmail, customerDisplayName } = require('../../lib/email');
 const { ORDER_POPULATE } = require('../../services/orderFromPaymentIntent');
 const { creditCashbackForOrder } = require('../../services/walletService');
 const {
@@ -46,6 +46,30 @@ function parseDateEnd(d) {
   const end = new Date(x);
   end.setUTCHours(23, 59, 59, 999);
   return end;
+}
+
+async function notifyCustomerStatusChange(order, previousStatus) {
+  if (!order || previousStatus === order.status) {
+    return { skipped: true, reason: 'unchanged' };
+  }
+
+  const user = await User.findById(order.user).select('name email').lean();
+  const recipient = {
+    name: customerDisplayName(order, user),
+    email: customerEmail(order, user) || user?.email
+  };
+
+  if (!recipient.email) {
+    console.warn('[email] No customer email for status update', order._id);
+    return { skipped: true, reason: 'no_email' };
+  }
+
+  try {
+    return await sendOrderStatusUpdateEmail(recipient, order, previousStatus);
+  } catch (mailErr) {
+    console.error('Order status email failed:', mailErr);
+    return { skipped: true, reason: mailErr.message };
+  }
 }
 
 /**
@@ -240,6 +264,7 @@ router.put('/:id/status', async (req, res) => {
       return fail(res, 404, 'Order not found');
     }
 
+    const previousStatus = order.status;
     order.status = nextStatus;
     if (nextStatus === 'delivered') {
       order.isDelivered = true;
@@ -254,10 +279,14 @@ router.put('/:id/status', async (req, res) => {
       await order.save();
     }
 
+    const emailResult = await notifyCustomerStatusChange(order, previousStatus);
+
     const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
     return ok(res, 200, {
-      message: 'Order status updated',
-      data: { order: populated }
+      message: emailResult?.sent
+        ? 'Order status updated — customer notified by email'
+        : 'Order status updated',
+      data: { order: populated, emailNotified: Boolean(emailResult?.sent) }
     });
   } catch (error) {
     if (error.name === 'ValidationError') {
@@ -333,6 +362,7 @@ router.put('/:id/paid', async (req, res) => {
       return fail(res, 404, 'Order not found');
     }
 
+    const previousStatus = order.status;
     const paid = req.body.isPaid !== false;
     order.isPaid = paid;
     order.paidAt = paid ? order.paidAt || new Date() : null;
@@ -342,10 +372,12 @@ router.put('/:id/paid', async (req, res) => {
 
     await order.save();
 
+    const emailResult = await notifyCustomerStatusChange(order, previousStatus);
+
     const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
     return ok(res, 200, {
       message: paid ? 'Order marked as paid' : 'Order marked as unpaid',
-      data: { order: populated }
+      data: { order: populated, emailNotified: Boolean(emailResult?.sent) }
     });
   } catch (error) {
     console.error('Admin mark paid error:', error);
@@ -380,22 +412,24 @@ router.put('/:id/tracking', async (req, res) => {
       return fail(res, 404, 'Order not found');
     }
 
+    const previousStatus = order.status;
     order.trackingNumber = tn;
+    if (order.status !== 'shipped' && order.status !== 'delivered') {
+      order.status = 'shipped';
+    }
     await order.save();
 
-    const user = await User.findById(order.user).select('name email').lean();
-    if (user?.email) {
-      try {
-        await sendOrderShippedEmail(user, order);
-      } catch (mailErr) {
-        console.error('Shipped email failed:', mailErr);
-      }
+    let emailResult = await notifyCustomerStatusChange(order, previousStatus);
+    if (emailResult?.skipped && previousStatus === order.status) {
+      emailResult = await notifyCustomerStatusChange(order, 'processing');
     }
 
     const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
     return ok(res, 200, {
-      message: 'Tracking saved and customer notified',
-      data: { order: populated }
+      message: emailResult?.sent
+        ? 'Tracking saved — customer notified by email'
+        : 'Tracking saved and customer notified',
+      data: { order: populated, emailNotified: Boolean(emailResult?.sent) }
     });
   } catch (error) {
     console.error('Admin tracking error:', error);

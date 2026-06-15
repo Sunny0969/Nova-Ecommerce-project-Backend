@@ -8,6 +8,7 @@ const Category = require('../models/Category');
 const { getStoreSettings } = require('../services/storeSettings');
 const { getOrSet, CACHE_KEYS } = require('../lib/apiCache');
 const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
+const { buildPromoTickerPayload } = require('../lib/promoTicker');
 
 const router = express.Router();
 
@@ -113,6 +114,26 @@ router.get('/home-stats', async (req, res) => {
   } catch (error) {
     console.error('public home-stats:', error);
     res.status(500).json({ success: false, message: error.message || 'Failed to load home stats' });
+  }
+});
+
+/**
+ * GET /api/public/promo-ticker
+ * Active voucher codes + featured offers for the header marquee.
+ */
+router.get('/promo-ticker', async (req, res) => {
+  try {
+    const { value: data, hit } = await getOrSet(
+      CACHE_KEYS.PUBLIC_PROMO_TICKER,
+      () => buildPromoTickerPayload(),
+      300
+    );
+
+    setPublicApiCacheHeaders(res, { hit });
+    return ok(res, data);
+  } catch (error) {
+    console.error('public promo-ticker:', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to load promo ticker' });
   }
 });
 
