@@ -319,7 +319,19 @@ function shapeProductForm(p) {
         ? Number(p.weightKg)
         : null,
     variantGroupKey: p.variantGroupKey != null ? String(p.variantGroupKey) : '',
-    variantAxes: sanitizeVariantAxes(p.variantAxes || {})
+    variantAxes: sanitizeVariantAxes(p.variantAxes || {}),
+    shopGender: p.shopGender != null ? String(p.shopGender) : '',
+    shopSubcategory:
+      typeof p.shopSubcategory === 'object' && p.shopSubcategory?._id
+        ? {
+            _id: p.shopSubcategory._id,
+            name: p.shopSubcategory.name || '',
+            slug: p.shopSubcategory.slug || '',
+            gender: p.shopSubcategory.gender || ''
+          }
+        : p.shopSubcategory
+          ? { _id: p.shopSubcategory }
+          : null
   };
 }
 
@@ -387,7 +399,9 @@ router.get('/:id', async (req, res) => {
     if (!isValidObjectId(id)) {
       return fail(res, 400, 'Invalid product id');
     }
-    const docLean = await Product.findById(id).lean();
+    const docLean = await Product.findById(id)
+      .populate('shopSubcategory', 'name slug gender displayOrder')
+      .lean();
     if (!docLean) {
       return fail(res, 404, 'Product not found');
     }

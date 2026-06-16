@@ -109,6 +109,20 @@ const productSchema = new mongoose.Schema(
       default: [],
       index: true
     },
+    /** Clothing shop filters — gender + admin-managed subcategory */
+    shopGender: {
+      type: String,
+      enum: ['', 'women', 'men'],
+      default: '',
+      index: true
+    },
+    shopSubcategory: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ProductSubcategory',
+      default: null,
+      index: true,
+      sparse: true
+    },
     /** Optional apparel / variant metadata */
     color: {
       type: String,

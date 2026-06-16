@@ -37,6 +37,12 @@ const { getOrSet, CACHE_KEYS } = require('../lib/apiCache');
 const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
 const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
 const { activeCategoryProductFilter } = require('../lib/activeCategories');
+const ProductSubcategory = require('../models/ProductSubcategory');
+const {
+  normalizeGender,
+  resolveShopSubcategoryId,
+  validateClothingTaxonomyForPublish
+} = require('../lib/shopSubcategories');
 
 const router = express.Router();
 
@@ -314,6 +320,31 @@ async function buildListFilter(query) {
   const tag = String(query.tag || '').trim();
   if (tag) {
     and.push({ tags: tag });
+  }
+
+  const shopGender = normalizeGender(query.gender);
+  if (shopGender) {
+    and.push({ shopGender });
+  }
+
+  const subcategorySlug = String(query.subcategory || '')
+    .trim()
+    .toLowerCase();
+  if (subcategorySlug) {
+    let filterCategoryId = null;
+    if (slugList.length === 1) {
+      const catRow = await Category.findOne({ slug: slugList[0], isActive: true }).select('_id').lean();
+      filterCategoryId = catRow?._id || null;
+    }
+    const subQ = { slug: subcategorySlug, isActive: true };
+    if (filterCategoryId) subQ.category = filterCategoryId;
+    if (shopGender) subQ.gender = shopGender;
+    const subRow = await ProductSubcategory.findOne(subQ).select('_id').lean();
+    if (!subRow) {
+      and.push({ _id: { $in: [] } });
+    } else {
+      and.push({ shopSubcategory: subRow._id });
+    }
   }
 
   if (onSale === 'true' || onSale === true) {
@@ -821,8 +852,41 @@ function parseMultipartBody(req) {
     variantAxes: (() => {
       if (!Object.prototype.hasOwnProperty.call(b, 'variantAxes')) return undefined;
       return parseVariantAxesFromBodyField(b.variantAxes);
-    })()
+    })(),
+    shopGender: Object.prototype.hasOwnProperty.call(b, 'shopGender')
+      ? normalizeGender(b.shopGender)
+      : undefined,
+    shopSubcategory: Object.prototype.hasOwnProperty.call(b, 'shopSubcategory')
+      ? b.shopSubcategory === '' || b.shopSubcategory == null
+        ? null
+        : String(b.shopSubcategory).trim()
+      : undefined
   };
+}
+
+async function resolveShopTaxonomyFields(parsed, categoryId) {
+  const out = { shopGender: undefined, shopSubcategory: undefined, error: null };
+  if (parsed.shopGender !== undefined) {
+    out.shopGender = parsed.shopGender || '';
+  }
+  if (parsed.shopSubcategory !== undefined) {
+    if (parsed.shopSubcategory == null || parsed.shopSubcategory === '') {
+      out.shopSubcategory = null;
+    } else {
+      const genderForSub =
+        out.shopGender !== undefined ? out.shopGender : normalizeGender(parsed.shopGender);
+      const subId = await resolveShopSubcategoryId(parsed.shopSubcategory, {
+        categoryId,
+        gender: genderForSub
+      });
+      if (!subId) {
+        out.error = 'Invalid shop subcategory for this category/gender';
+        return out;
+      }
+      out.shopSubcategory = subId;
+    }
+  }
+  return out;
 }
 
 /**
@@ -932,6 +996,34 @@ router.post(
       if (parsed.lowStockThreshold !== undefined) {
         createPayload.lowStockThreshold = parsed.lowStockThreshold;
       }
+
+      const taxonomy = await resolveShopTaxonomyFields(parsed, categoryId);
+      if (taxonomy.error) {
+        for (const u of uploaded) {
+          await deleteByPublicId(u.public_id);
+        }
+        return fail(res, 400, taxonomy.error);
+      }
+      if (taxonomy.shopGender !== undefined) createPayload.shopGender = taxonomy.shopGender;
+      if (taxonomy.shopSubcategory !== undefined) {
+        createPayload.shopSubcategory = taxonomy.shopSubcategory;
+      }
+
+      const willPublish = createPayload.isPublished === true;
+      const publishTaxErr = await validateClothingTaxonomyForPublish(
+        Category,
+        categoryId,
+        createPayload.shopGender || '',
+        createPayload.shopSubcategory || null,
+        willPublish
+      );
+      if (publishTaxErr) {
+        for (const u of uploaded) {
+          await deleteByPublicId(u.public_id);
+        }
+        return fail(res, 400, publishTaxErr);
+      }
+
       const doc = await Product.create(createPayload);
 
       // Auto-generate 0–10 professional “seed” reviews (Pakistani names)
@@ -1328,6 +1420,29 @@ router.put(
           product.images = nextImages;
         }
       }
+
+      const taxonomyFields = req.is('multipart/form-data')
+        ? { shopGender: parsed.shopGender, shopSubcategory: parsed.shopSubcategory }
+        : {
+            shopGender:
+              req.body.shopGender !== undefined ? normalizeGender(req.body.shopGender) : undefined,
+            shopSubcategory: req.body.shopSubcategory
+          };
+      const taxonomy = await resolveShopTaxonomyFields(taxonomyFields, product.category);
+      if (taxonomy.error) return fail(res, 400, taxonomy.error);
+      if (taxonomy.shopGender !== undefined) product.shopGender = taxonomy.shopGender;
+      if (taxonomy.shopSubcategory !== undefined) {
+        product.shopSubcategory = taxonomy.shopSubcategory;
+      }
+
+      const publishTaxErr = await validateClothingTaxonomyForPublish(
+        Category,
+        product.category,
+        product.shopGender || '',
+        product.shopSubcategory || null,
+        product.isPublished === true
+      );
+      if (publishTaxErr) return fail(res, 400, publishTaxErr);
 
     await product.save();
 

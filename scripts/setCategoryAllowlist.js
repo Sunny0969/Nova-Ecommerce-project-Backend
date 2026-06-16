@@ -28,7 +28,8 @@ const ACTIVE_SLUGS = [
   'milk-dairy',
   'baby-care',
   'hair-care',
-  'clothing'
+  'clothing',
+  'ladies-purse'
 ];
 
 async function main() {
