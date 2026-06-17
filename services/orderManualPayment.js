@@ -386,10 +386,11 @@ async function finalizeGuestOrderWithManualPayment(
   shippingAddress,
   paymentMethod,
   clientIp = '',
-  paymentProofInput = {}
+  paymentProofInput = {},
+  couponCode = null
 ) {
   const userId = await resolveGuestCheckoutUser(shippingAddress);
-  const snapshot = await buildGuestCheckoutSnapshot(guestItems, deliveryOption);
+  const snapshot = await buildGuestCheckoutSnapshot(guestItems, deliveryOption, couponCode);
   return createManualOrderFromSnapshot(
     userId,
     snapshot,

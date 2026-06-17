@@ -8,12 +8,12 @@ const {
   countWordsInHtml,
   MIN_BLOG_WORDS,
   parseJsonFromModel,
-  ensureInternalShopLinks,
   extractSectionsFromHtml,
   buildBlogPostingSchema,
   pickUniqueFeaturedImage,
   mapTags
 } = require('../lib/blogSeo');
+const { normalizeBlogHtml } = require('../lib/blogContentStructure');
 const { resolveBlogShopDestination } = require('../lib/blogShopLink');
 
 /** Free-tier friendly instruct model on Hugging Face Inference Providers. */
@@ -55,13 +55,15 @@ You MUST strictly follow this Content Audit Checklist:
 2. STRUCTURE & HEADINGS RULES:
 - Output format MUST be strictly HTML inside the JSON "content" string.
 - Do NOT include <h1> in "content" — the page H1 comes from "title" only.
-- Use 6 to 8 substantial <h2> sections: Overview, Cost/Price Breakdown Ranges, Product Comparisons, Buyer Types/Real-life Household Examples, Practical Tips, and FAQs.
-- Include a dedicated "FAQs" section as an <h2> at the end with exactly 4 to 5 frequently asked questions. Each FAQ answer must be 3-5 lines max, helpful, and neutral.
-- Use <h3> only for sub-explanations. Paragraphs must be short: 2 to 4 lines max using simple, professional English (active voice).
+- Use 6 to 8 substantial <h2> sections for the main article body (Overview, comparisons, tips, etc.).
+- Include exactly ONE <h2>Conclusion</h2> section near the end (before FAQs).
+- Include exactly ONE <h2>Frequently Asked Questions</h2> section as the FINAL section in "content" — never place FAQs in the middle.
+- Do NOT repeat the conclusion. Do NOT add a second FAQ block.
+- Use <h3> only for sub-explanations and FAQ questions. Paragraphs must be short: 2 to 4 lines max using simple, professional English (active voice).
 
 3. TABLES & BULLET POINTS:
 - Include exactly one structural HTML <table> comparing grocery options or budget vs premium tier choices to support the business angle.
-- Use bullet points (<ul> and <li>) naturally for quick takeaways.
+- Use bullet points (<ul> and <li>) naturally for quick takeaways — each list item should be a complete thought.
 
 4. LENGTH (CRITICAL):
 - The "content" HTML body MUST contain at least ${MIN_BLOG_WORDS} words of readable text (excluding HTML tags).
@@ -72,7 +74,8 @@ You MUST strictly follow this Content Audit Checklist:
 - Never use exact fixed prices. Always use realistic Pakistani Rupee (Rs.) ranges.
 - Avoid clickbait promises like "cheap", "best", "guaranteed". Content must feel safe, informative, and expert-written.
 - Focus on convenience, delivery speed, and time-saving aspects of ordering online.
-- Include at least two internal links with site-relative URLs: href="/shop" and href="/shop?category=..." matching the topic.
+- Include at least four internal links with site-relative URLs (e.g. href="/shop", href="/blog", href="/brands", and href="/shop?category=..." or a category path matching the topic).
+- Include at least four external https links to authoritative sources (WHO, FAO, Google Search Central, PBS Pakistan, etc.) with target="_blank" rel="noopener noreferrer". Never use broken, placeholder, or javascript: links.
 
 The response must be strictly a valid, raw JSON object without markdown formatting blocks (NO \`\`\`json wrappers), containing exactly these keys:
 {
@@ -169,10 +172,10 @@ async function persistBlogDraft(rawJson) {
     currentUrl: rawJson.destinationUrl
   });
 
-  const contentHtml = ensureInternalShopLinks(
-    String(rawJson.content || ''),
-    shopDest.destinationUrl
-  );
+  const contentHtml = normalizeBlogHtml(String(rawJson.content || ''), {
+    shopPath: shopDest.destinationUrl,
+    blogSlug: slugified
+  });
   const sections = extractSectionsFromHtml(contentHtml);
   const summary = String(rawJson.summary || '').trim().slice(0, 320);
   const title = String(rawJson.title || '').trim().slice(0, 200);

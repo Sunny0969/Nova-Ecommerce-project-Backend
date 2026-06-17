@@ -82,6 +82,7 @@ router.post('/place', proofUpload.single('proof'), async (req, res) => {
 
     const transactionId =
       body.transactionId != null ? String(body.transactionId).trim().slice(0, 120) : '';
+    const couponCode = body.couponCode != null ? String(body.couponCode).trim() : '';
 
     let proofImageUrl = '';
     let proofImagePublicId = '';
@@ -101,7 +102,8 @@ router.post('/place', proofUpload.single('proof'), async (req, res) => {
       shippingAddress && typeof shippingAddress === 'object' ? shippingAddress : {},
       paymentMethod,
       clientIpFromReq(req),
-      { transactionId, imageUrl: proofImageUrl, imagePublicId: proofImagePublicId }
+      { transactionId, imageUrl: proofImageUrl, imagePublicId: proofImagePublicId },
+      couponCode || null
     );
 
     notifyOrderPlaced(result, res, req);
@@ -116,6 +118,7 @@ router.post('/place', proofUpload.single('proof'), async (req, res) => {
     if (error.code === 'PRODUCT_GONE') return fail(res, 409, error.message || 'Product unavailable');
     if (error.code === 'BAD_PAYMENT_METHOD') return fail(res, 400, 'Invalid payment method');
     if (error.code === 'BAD_EMAIL') return fail(res, 400, 'Valid email is required');
+    if (error.code === 'BAD_COUPON') return fail(res, 400, error.message || 'Coupon cannot be applied');
     console.error('Guest place order error:', error);
     return fail(res, 500, error.message || 'Failed to place order');
   }

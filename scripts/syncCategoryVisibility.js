@@ -8,6 +8,9 @@ const { configureMongoDns, MONGOOSE_CONNECT_OPTS } = require('../lib/configureMo
 const Category = require('../models/Category');
 const Product = require('../models/Product');
 const { syncCategoryVisibility } = require('../lib/syncCategoryVisibility');
+const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
+const { flushAll } = require('../lib/apiCache');
+const { flushRemoteApiCache } = require('../lib/flushRemoteApiCache');
 
 configureMongoDns();
 
@@ -22,6 +25,9 @@ async function run() {
     console.log('[MongoDB] Connected');
 
     const vis = await syncCategoryVisibility(Category, Product);
+    flushAll();
+    invalidateCatalogCache();
+    await flushRemoteApiCache();
     const active = await Category.find({ isActive: true }).select('slug name').lean();
     console.log(`[sync] ${vis.deactivated} categories hidden, ${vis.activated} now active`);
     console.log('[sync] Active categories:', active.map((c) => c.slug).join(', ') || '(none)');

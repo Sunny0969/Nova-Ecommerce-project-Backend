@@ -15,7 +15,8 @@ const {
   parseProductPagination,
   ADMIN_LIST_DEFAULT_LIMIT,
   ADMIN_LIST_MAX_LIMIT,
-  buildProductCategoryFilter
+  buildProductCategoryFilter,
+  adminListProductsUncasted
 } = require('../../lib/productQueries');
 const { invalidateCatalogCache } = require('../../lib/invalidatePublicCache');
 
@@ -365,16 +366,14 @@ router.get('/', async (req, res) => {
     if (categoryFilter) and.push(categoryFilter);
 
     const filter = and.length ? { $and: and } : {};
+    const adminSelect = `${ADMIN_LIST_SELECT} lowStockThreshold submittedByStaff`;
 
-    const [rawRows, totalCount] = await Promise.all([
-      Product.find(filter)
-        .select(`${ADMIN_LIST_SELECT} lowStockThreshold submittedByStaff`)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      Product.countDocuments(filter)
-    ]);
+    const { rows: rawRows, totalCount } = await adminListProductsUncasted(filter, {
+      select: adminSelect,
+      sort: { createdAt: -1 },
+      skip,
+      limit
+    });
 
     const raw = await attachCategoriesToProducts(rawRows);
 

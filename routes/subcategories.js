@@ -26,18 +26,22 @@ router.get('/', async (req, res) => {
       return fail(res, 400, 'category query is required');
     }
 
-    const cat = await Category.findOne({ slug: categorySlug, isActive: true }).select('_id slug name').lean();
+    const cat = await Category.findOne({ slug: categorySlug }).select('_id slug name isActive').lean();
     if (!cat) {
-      return ok(res, { category: null, genders: [] });
+      return ok(res, { category: null, mode: 'none', genders: [], subcategories: [] });
     }
 
     const cacheKey = CACHE_KEYS.subcategoriesTree(categorySlug);
-    const { value: genders, hit } = await getOrSet(cacheKey, () => buildPublicSubcategoryTree(cat._id));
+    const { value: tree, hit } = await getOrSet(cacheKey, () =>
+      buildPublicSubcategoryTree(cat._id, cat.slug)
+    );
 
     setPublicApiCacheHeaders(res, { hit });
     ok(res, {
       category: { _id: cat._id, slug: cat.slug, name: cat.name },
-      genders
+      mode: tree.mode || 'none',
+      genders: tree.genders || [],
+      subcategories: tree.subcategories || []
     });
   } catch (err) {
     console.error('List subcategories error:', err);

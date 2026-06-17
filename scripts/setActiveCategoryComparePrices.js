@@ -1,6 +1,6 @@
 /**
  * Set comparePrice (list / actual price) on products in active categories.
- * comparePrice = selling price + random Rs 50–500 (per product).
+ * Uses category-aware sale caps (grocery 5–10%, others 5–20%; clothing/purses skipped).
  *
  * Run:
  *   node scripts/setActiveCategoryComparePrices.js
@@ -15,15 +15,25 @@ const Category = require('../models/Category');
 const Product = require('../models/Product');
 const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
 
-const MIN_MARKUP = 50;
-const MAX_MARKUP = 500;
+const SKIP_CATEGORY_SLUGS = new Set(['clothing', 'ladies-purse']);
 
-function randomMarkup() {
-  return Math.floor(Math.random() * (MAX_MARKUP - MIN_MARKUP + 1)) + MIN_MARKUP;
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function roundPrice(n) {
-  return Math.round(Number(n) * 100) / 100;
+function discountRangeForSlug(slug) {
+  return slug === 'grocery' ? { min: 5, max: 10 } : { min: 5, max: 20 };
+}
+
+function compareForDiscount(price, targetPct) {
+  const priceN = Number(price);
+  const pct = Number(targetPct);
+  if (!Number.isFinite(priceN) || priceN <= 0 || pct <= 0 || pct >= 100) return null;
+  let compare = Math.ceil(priceN / (1 - pct / 100));
+  while (compare > priceN && ((compare - priceN) / compare) * 100 > pct + 0.001) {
+    compare -= 1;
+  }
+  return compare > priceN ? compare : null;
 }
 
 async function main() {
@@ -40,6 +50,8 @@ async function main() {
     return;
   }
 
+  const slugById = new Map(activeCats.map((c) => [String(c._id), c.slug]));
+
   const products = await Product.find({ category: { $in: activeIds } })
     .select('_id name price comparePrice category')
     .lean();
@@ -52,11 +64,16 @@ async function main() {
 
   const bulk = [];
   for (const p of products) {
+    const slug = slugById.get(String(p.category)) || '';
+    if (SKIP_CATEGORY_SLUGS.has(slug)) continue;
+
     const price = Number(p.price);
     if (!Number.isFinite(price) || price < 0) continue;
 
-    const comparePrice = roundPrice(price + randomMarkup());
-    if (comparePrice <= price) continue;
+    const { min, max } = discountRangeForSlug(slug);
+    const targetPct = randomInt(min, max);
+    const comparePrice = compareForDiscount(price, targetPct);
+    if (!comparePrice || comparePrice <= price) continue;
 
     bulk.push({
       updateOne: {
@@ -82,12 +99,13 @@ async function main() {
 
   console.log(`Active categories: ${activeCats.length}`);
   console.log(`Products updated: ${modified} / ${products.length}`);
-  console.log(`Markup range: +Rs ${MIN_MARKUP} to +Rs ${MAX_MARKUP} above selling price`);
+  console.log('Sale range: grocery 5–10%, other categories 5–20% (clothing/purses skipped)');
   console.log('\nSample:');
   samples.forEach((p) => {
-    const diff = roundPrice(Number(p.comparePrice) - Number(p.price));
+    const diff = Number(p.comparePrice) - Number(p.price);
+    const pct = p.comparePrice > p.price ? Math.round((diff / p.comparePrice) * 100) : 0;
     console.log(`  ${p.name}`);
-    console.log(`    Selling: Rs ${p.price}  |  List: Rs ${p.comparePrice}  (+Rs ${diff})`);
+    console.log(`    Selling: Rs ${p.price}  |  List: Rs ${p.comparePrice}  (${pct}% off)`);
   });
 
   await mongoose.disconnect();

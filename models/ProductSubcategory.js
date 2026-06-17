@@ -9,10 +9,11 @@ const productSubcategorySchema = new mongoose.Schema(
       required: true,
       index: true
     },
+    /** Empty for flat categories (e.g. snacks); women/men for clothing */
     gender: {
       type: String,
-      enum: ['women', 'men'],
-      required: true,
+      enum: ['', 'women', 'men'],
+      default: '',
       index: true
     },
     name: {
@@ -26,6 +27,11 @@ const productSubcategorySchema = new mongoose.Schema(
       required: true,
       lowercase: true,
       trim: true
+    },
+    /** Title keywords for auto-matching products (e.g. biscuit, wafer) */
+    matchKeywords: {
+      type: [String],
+      default: []
     },
     displayOrder: {
       type: Number,

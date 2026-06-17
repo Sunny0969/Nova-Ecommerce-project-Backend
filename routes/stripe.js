@@ -45,6 +45,10 @@ function handlePaymentIntentErrors(e, res) {
     fail(res, 400, e.message);
     return true;
   }
+  if (e.code === 'BAD_COUPON') {
+    fail(res, 400, e.message);
+    return true;
+  }
   return false;
 }
 
@@ -119,10 +123,11 @@ guestRouter.post('/create-payment-intent', async (req, res) => {
         ? req.body.shippingAddress
         : undefined;
     const items = req.body.items;
+    const couponCode = req.body.couponCode != null ? String(req.body.couponCode).trim() : '';
 
     let result;
     try {
-      result = await buildGuestPaymentIntentParams(items, deliveryOption, shippingAddress);
+      result = await buildGuestPaymentIntentParams(items, deliveryOption, shippingAddress, couponCode || null);
     } catch (e) {
       const handled = handlePaymentIntentErrors(e, res);
       if (handled) return;
@@ -151,7 +156,7 @@ guestRouter.post('/create-payment-intent', async (req, res) => {
  */
 guestRouter.post('/confirm', async (req, res) => {
   try {
-    const { paymentIntentId, deliveryOption, shippingAddress, items } = req.body;
+    const { paymentIntentId, deliveryOption, shippingAddress, items, couponCode } = req.body;
     if (!paymentIntentId || typeof paymentIntentId !== 'string') {
       return fail(res, 400, 'paymentIntentId is required');
     }
@@ -163,13 +168,15 @@ guestRouter.post('/confirm', async (req, res) => {
         items,
         ['standard', 'express', 'nextday'].includes(deliveryOption) ? deliveryOption : 'standard',
         shippingAddress && typeof shippingAddress === 'object' ? shippingAddress : {},
-        clientIpFromReq(req)
+        clientIpFromReq(req),
+        couponCode != null ? String(couponCode).trim() : null
       );
     } catch (e) {
       if (e.code === 'EMPTY_CART') return fail(res, 400, 'Cart is empty');
       if (e.code === 'AMOUNT_MISMATCH') return fail(res, 409, e.message);
       if (e.code === 'STOCK') return fail(res, 409, e.message);
       if (e.code === 'BAD_EMAIL') return fail(res, 400, e.message);
+      if (e.code === 'BAD_COUPON') return fail(res, 400, e.message);
       if (e.code === 'NOT_SUCCEEDED' || e.code === 'BAD_METADATA') return fail(res, 400, e.message);
       throw e;
     }

@@ -352,9 +352,21 @@ async function startServer() {
 
     try {
       const Category = require('./models/Category');
+      const Product = require('./models/Product');
       const { ensureHomeCategories } = require('./lib/homeCategoriesSeed');
       const { upserted } = await ensureHomeCategories(Category);
       console.log(`[seed] Synced ${upserted} home categories (images + metadata)`);
+
+      const { syncCategoryVisibility } = require('./lib/syncCategoryVisibility');
+      const { flushAll } = require('./lib/apiCache');
+      const { invalidateCatalogCache } = require('./lib/invalidatePublicCache');
+      const vis = await syncCategoryVisibility(Category, Product);
+      flushAll();
+      invalidateCatalogCache();
+      const activeCount = await Category.countDocuments({ isActive: true });
+      console.log(
+        `[categories] ${activeCount} active (sync: ${vis.activated} with products, ${vis.deactivated} empty hidden)`
+      );
     } catch (seedErr) {
       console.warn('[seed] Home categories sync skipped:', seedErr.message);
     }

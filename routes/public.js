@@ -9,6 +9,8 @@ const { getStoreSettings } = require('../services/storeSettings');
 const { getOrSet, CACHE_KEYS } = require('../lib/apiCache');
 const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
 const { buildPromoTickerPayload } = require('../lib/promoTicker');
+const { validateCouponForGuestItems } = require('../utils/cartCoupon');
+const Coupon = require('../models/Coupon');
 
 const router = express.Router();
 
@@ -156,6 +158,49 @@ router.get('/stripe-config', (req, res) => {
     configured,
     mode: secretLive || pubLive ? 'live' : secretTest || pubTest ? 'test' : null
   });
+});
+
+/**
+ * POST /api/public/validate-coupon
+ * Body: { code, items: [{ productId, quantity, price? }] }
+ * No login required — for guest cart coupon apply.
+ */
+router.post('/validate-coupon', async (req, res) => {
+  try {
+    const code = req.body?.code;
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    const normalized = items
+      .map((line) => ({
+        productId: String(line.productId || line.product || '').trim(),
+        quantity: Math.max(1, Math.floor(Number(line.quantity) || 1)),
+        price: line.price != null ? Number(line.price) : undefined
+      }))
+      .filter((line) => line.productId);
+
+    const check = await validateCouponForGuestItems(code, normalized, null);
+    if (!check.ok) {
+      return res.status(400).json({ success: false, message: check.message || 'Coupon cannot be applied' });
+    }
+
+    const coupon = await Coupon.findOne({ code: String(code).trim().toUpperCase() })
+      .select('code discountType discountValue')
+      .lean();
+
+    return ok(res, {
+      coupon: coupon
+        ? {
+            _id: coupon._id,
+            code: coupon.code,
+            discountType: coupon.discountType,
+            discountValue: coupon.discountValue
+          }
+        : null,
+      discountAmount: check.discountAmount
+    });
+  } catch (error) {
+    console.error('public validate-coupon:', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to validate coupon' });
+  }
 });
 
 module.exports = router;

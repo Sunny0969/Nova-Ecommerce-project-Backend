@@ -453,7 +453,7 @@ function normalizeGuestItems(raw) {
 /**
  * Guest checkout — PaymentIntent from browser cart (no JWT).
  */
-async function buildGuestPaymentIntentParams(guestItems, deliveryOption, shippingAddress) {
+async function buildGuestPaymentIntentParams(guestItems, deliveryOption, shippingAddress, couponCode = null) {
   const stripe = getStripe();
   if (!stripe) {
     const err = new Error('Stripe is not configured');
@@ -470,7 +470,7 @@ async function buildGuestPaymentIntentParams(guestItems, deliveryOption, shippin
 
   let snapshot;
   try {
-    snapshot = await buildGuestCheckoutSnapshot(items, deliveryOption);
+    snapshot = await buildGuestCheckoutSnapshot(items, deliveryOption, couponCode);
   } catch (e) {
     if (e.code) throw e;
     throw e;
@@ -536,7 +536,8 @@ async function finalizeGuestStripeOrder(
   guestItems,
   deliveryOption,
   shippingAddress,
-  clientIp = ''
+  clientIp = '',
+  couponCode = null
 ) {
   const stripe = getStripe();
   if (!stripe) {
@@ -570,7 +571,7 @@ async function finalizeGuestStripeOrder(
     throw err;
   }
 
-  const snapshot = await buildGuestCheckoutSnapshot(items, deliveryOption);
+  const snapshot = await buildGuestCheckoutSnapshot(items, deliveryOption, couponCode);
   const expectedCents = Math.round(snapshot.totalPrice * 100);
   if (pi.amount !== expectedCents) {
     const err = new Error('Cart total no longer matches payment amount');
@@ -628,6 +629,7 @@ async function finalizeGuestStripeOrder(
       shippingPrice: snapshot.shippingPrice,
       totalPrice: snapshot.totalPrice,
       discountAmount: snapshot.discountAmount,
+      coupon: snapshot.couponId || undefined,
       isPaid: true,
       paidAt: new Date(),
       status: 'processing',
@@ -639,6 +641,10 @@ async function finalizeGuestStripeOrder(
       Order.findById(order._id).populate(ORDER_POPULATE),
       User.findById(userId).select('name email')
     ]);
+
+    if (snapshot.couponId) {
+      await Coupon.findByIdAndUpdate(snapshot.couponId, { $inc: { usedCount: 1 } });
+    }
 
     return { order, populated, duplicate: false, emailNotify: { user, addr } };
   } catch (err) {

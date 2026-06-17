@@ -3,6 +3,8 @@ const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const { validateCouponForCart } = require('./cartCoupon');
 const { getStoreSettings } = require('../services/storeSettings');
+const Coupon = require('../models/Coupon');
+const { validateCouponForGuestItems } = require('./cartCoupon');
 const { computeCartWeightKg, resolveStandardShippingPrice, shouldUseFlatStandardShipping } = require('../lib/shippingWeight');
 
 const ITEMS_POPULATE = {
@@ -202,8 +204,10 @@ async function buildCheckoutSnapshot(userId, deliveryOption = 'standard') {
 /**
  * Build checkout snapshot from guest cart lines (no server cart / login).
  * @param {Array<{ productId: string, quantity: number, price?: number }>} guestItems
+ * @param {string} [deliveryOption]
+ * @param {string} [couponCode]
  */
-async function buildGuestCheckoutSnapshot(guestItems, deliveryOption = 'standard') {
+async function buildGuestCheckoutSnapshot(guestItems, deliveryOption = 'standard', couponCode = null) {
   const settings = await getStoreSettings();
   if (!Array.isArray(guestItems) || !guestItems.length) {
     const err = new Error('Cart is empty');
@@ -259,7 +263,29 @@ async function buildGuestCheckoutSnapshot(guestItems, deliveryOption = 'standard
     });
   }
 
-  const discountAmount = 0;
+  let discountAmount = 0;
+  let couponId = null;
+  if (couponCode) {
+    const guestLinesForCoupon = guestItems.map((line) => {
+      const idStr = String(line.productId || '');
+      const p = byId[idStr];
+      return {
+        productId: idStr,
+        quantity: Math.floor(Number(line.quantity)),
+        price: line.price != null && line.price >= 0 ? Number(line.price) : p ? Number(p.price) : undefined
+      };
+    });
+    const check = await validateCouponForGuestItems(couponCode, guestLinesForCoupon, null);
+    if (!check.ok) {
+      const err = new Error(check.message || 'Coupon cannot be applied');
+      err.code = 'BAD_COUPON';
+      throw err;
+    }
+    discountAmount = check.discountAmount;
+    const coupon = await Coupon.findOne({ code: String(couponCode).trim().toUpperCase() }).select('_id').lean();
+    couponId = coupon?._id || null;
+  }
+
   const guestLines = guestItems.map((line) => {
     const idStr = String(line.productId || '');
     const p = byId[idStr];
@@ -278,7 +304,7 @@ async function buildGuestCheckoutSnapshot(guestItems, deliveryOption = 'standard
     shippingPrice,
     discountAmount,
     totalPrice,
-    couponId: null
+    couponId
   };
 }
 

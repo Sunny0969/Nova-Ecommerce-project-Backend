@@ -5,7 +5,13 @@ const Category = require('../../models/Category');
 const ProductSubcategory = require('../../models/ProductSubcategory');
 const Product = require('../../models/Product');
 const { invalidateCatalogCache } = require('../../lib/invalidatePublicCache');
-const { countProductsBySubcategory, normalizeGender } = require('../../lib/shopSubcategories');
+const {
+  countProductsBySubcategory,
+  countProductsMatchingSubcategory,
+  normalizeGender,
+  normalizeKeywords,
+  GENDERED_CATEGORY_SLUGS
+} = require('../../lib/shopSubcategories');
 const { delByPrefix } = require('../../lib/apiCache');
 
 const router = express.Router();
@@ -29,6 +35,10 @@ function invalidateSubcategoryCache() {
   invalidateCatalogCache();
 }
 
+function categoryUsesGender(categorySlug) {
+  return GENDERED_CATEGORY_SLUGS.has(String(categorySlug || '').toLowerCase());
+}
+
 /**
  * GET /api/admin/subcategories?category=clothing
  */
@@ -47,11 +57,15 @@ router.get('/', async (req, res) => {
     const withCounts = await Promise.all(
       rows.map(async (row) => ({
         ...row,
-        productCount: await Product.countDocuments({ shopSubcategory: row._id })
+        productCount: await countProductsMatchingSubcategory(cat._id, row)
       }))
     );
 
-    ok(res, { category: cat, subcategories: withCounts });
+    ok(res, {
+      category: cat,
+      usesGender: categoryUsesGender(categorySlug),
+      subcategories: withCounts
+    });
   } catch (err) {
     console.error('Admin list subcategories error:', err);
     fail(res, 500, err.message || 'Failed to list subcategories');
@@ -60,15 +74,16 @@ router.get('/', async (req, res) => {
 
 /**
  * POST /api/admin/subcategories
- * Body: { categorySlug, gender, name, slug?, displayOrder?, isActive? }
+ * Body: { categorySlug, gender?, name, slug?, displayOrder?, isActive?, matchKeywords? }
  */
 router.post('/', async (req, res) => {
   try {
     const categorySlug = String(req.body.categorySlug || 'clothing').trim().toLowerCase();
-    const gender = normalizeGender(req.body.gender);
+    const usesGender = categoryUsesGender(categorySlug);
+    const gender = usesGender ? normalizeGender(req.body.gender) : '';
     const name = String(req.body.name || '').trim();
 
-    if (!gender) return fail(res, 400, 'gender must be women or men');
+    if (usesGender && !gender) return fail(res, 400, 'gender must be women or men');
     if (!name) return fail(res, 400, 'name is required');
 
     const cat = await Category.findOne({ slug: categorySlug }).select('_id');
@@ -80,13 +95,14 @@ router.post('/', async (req, res) => {
         : slugify(name, { lower: true, strict: true });
 
     const exists = await ProductSubcategory.findOne({ category: cat._id, gender, slug }).select('_id');
-    if (exists) return fail(res, 409, 'Subcategory slug already exists for this gender');
+    if (exists) return fail(res, 409, 'Subcategory slug already exists for this category');
 
     const row = await ProductSubcategory.create({
       category: cat._id,
       gender,
       name,
       slug,
+      matchKeywords: normalizeKeywords(req.body.matchKeywords),
       displayOrder: Number(req.body.displayOrder) || 0,
       isActive: req.body.isActive !== false
     });
@@ -110,6 +126,9 @@ router.put('/:id', async (req, res) => {
     const row = await ProductSubcategory.findById(id);
     if (!row) return fail(res, 404, 'Subcategory not found');
 
+    const cat = await Category.findById(row.category).select('slug').lean();
+    const usesGender = categoryUsesGender(cat?.slug);
+
     if (req.body.name != null) {
       const name = String(req.body.name).trim();
       if (!name) return fail(res, 400, 'name cannot be empty');
@@ -128,10 +147,14 @@ router.put('/:id', async (req, res) => {
       row.slug = nextSlug;
     }
 
-    if (req.body.gender != null) {
+    if (req.body.gender != null && usesGender) {
       const gender = normalizeGender(req.body.gender);
       if (!gender) return fail(res, 400, 'gender must be women or men');
       row.gender = gender;
+    }
+
+    if (req.body.matchKeywords != null) {
+      row.matchKeywords = normalizeKeywords(req.body.matchKeywords);
     }
 
     if (req.body.displayOrder != null) {

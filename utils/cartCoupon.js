@@ -94,10 +94,52 @@ async function validateCouponForCart(coupon, cartItems, userId) {
   return { ok: true, discountAmount };
 }
 
+/**
+ * Validate coupon against guest cart lines (productId + quantity + optional price).
+ * @param {Array<{ productId: string, quantity: number, price?: number }>} guestItems
+ */
+async function validateCouponForGuestItems(couponCode, guestItems, userId = null) {
+  const Product = require('../models/Product');
+  const Coupon = require('../models/Coupon');
+
+  const raw = String(couponCode || '').trim();
+  if (!raw) {
+    return { ok: false, message: 'Coupon code is required' };
+  }
+
+  const coupon = await Coupon.findOne({ code: raw.toUpperCase() });
+  if (!coupon) {
+    return { ok: false, message: 'Invalid coupon code' };
+  }
+
+  const lines = Array.isArray(guestItems) ? guestItems : [];
+  if (!lines.length) {
+    return { ok: false, message: 'Cart is empty' };
+  }
+
+  const productIds = lines.map((l) => l.productId).filter(Boolean);
+  const products = await Product.find({ _id: { $in: productIds } })
+    .populate('category', '_id')
+    .lean();
+  const byId = Object.fromEntries(products.map((p) => [String(p._id), p]));
+
+  const cartItems = lines.map((line) => {
+    const idStr = String(line.productId || '');
+    const p = byId[idStr];
+    const qty = Math.max(1, Math.floor(Number(line.quantity) || 1));
+    const price =
+      line.price != null && line.price >= 0 ? Number(line.price) : p ? Number(p.price) : 0;
+    return { product: p, quantity: qty, price };
+  });
+
+  return validateCouponForCart(coupon, cartItems, userId);
+}
+
 module.exports = {
   fullSubtotal,
   eligibleSubtotal,
   computeDiscountAmount,
   validateCouponForCart,
+  validateCouponForGuestItems,
   lineUnitPrice
 };

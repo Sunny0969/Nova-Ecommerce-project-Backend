@@ -2,11 +2,10 @@ const express = require('express');
 const mongoose = require('mongoose');
 const BlogPost = require('../../models/BlogPost');
 const { regenerateSitemapAutopilot } = require('../../lib/regenerateSitemapAutopilot');
-const { runBlogContentAudit, auditBlogPostDocument } = require('../../lib/blogContentAudit');
+const { runBlogContentAudit, auditBlogPostDocument, normalizeBlogHtml } = require('../../lib/blogContentAudit');
 const {
   getSiteOrigin,
   getSiteName,
-  ensureInternalShopLinks,
   extractSectionsFromHtml,
   buildBlogPostingSchema,
   estimateReadingMinutes
@@ -16,7 +15,7 @@ const { resolveBlogShopDestination } = require('../../lib/blogShopLink');
 const router = express.Router();
 
 function queueSitemapRefresh() {
-  void regenerateSitemapAutopilot();
+  return regenerateSitemapAutopilot();
 }
 function ok(res, data, status = 200) {
   return res.status(status).json({ success: true, data });
@@ -92,17 +91,34 @@ router.put('/:id', async (req, res) => {
     const summary = String(req.body.summary ?? req.body.description ?? '').trim();
     const content = String(req.body.content ?? req.body.body ?? '').trim();
 
-    const audit = runBlogContentAudit({ title, metaTitle, summary, content });
-    if (!audit.ok) {
-      return fail(res, 400, audit.message);
-    }
-
     const existing = await BlogPost.findById(id).lean();
     if (!existing) {
       return fail(res, 404, 'Blog post not found');
     }
 
-    const bodyHtml = ensureInternalShopLinks(content, existing.destinationUrl || '/shop');
+    const shopDest = await resolveBlogShopDestination({
+      blogCategory: existing.category,
+      tags: existing.tags,
+      primaryKeyword: existing.primaryKeyword,
+      currentLabel: existing.destinationLabel,
+      currentUrl: existing.destinationUrl
+    });
+
+    const bodyHtml = normalizeBlogHtml(content, {
+      shopPath: shopDest.destinationUrl || existing.destinationUrl || '/shop',
+      blogSlug: existing.slug
+    });
+
+    const audit = runBlogContentAudit({
+      title,
+      metaTitle,
+      summary,
+      content: bodyHtml
+    });
+    if (!audit.ok) {
+      return fail(res, 400, audit.message);
+    }
+
     const sections = extractSectionsFromHtml(bodyHtml);
     const resolvedMetaTitle = metaTitle.slice(0, 120);
     const canonicalUrl = `${getSiteOrigin()}/blog/${encodeURIComponent(existing.slug)}`;
@@ -113,14 +129,6 @@ router.put('/:id', async (req, res) => {
       featuredImage: existing.featuredImage,
       datePublished: (existing.dateISO || new Date()).toISOString(),
       canonicalUrl
-    });
-
-    const shopDest = await resolveBlogShopDestination({
-      blogCategory: existing.category,
-      tags: existing.tags,
-      primaryKeyword: existing.primaryKeyword,
-      currentLabel: existing.destinationLabel,
-      currentUrl: existing.destinationUrl
     });
 
     const post = await BlogPost.findByIdAndUpdate(
@@ -166,7 +174,30 @@ router.put('/:id/publish', async (req, res) => {
       return fail(res, 404, 'Blog post not found');
     }
 
-    const audit = auditBlogPostDocument(draft, { siteName: getSiteName() });
+    const shopDest = await resolveBlogShopDestination({
+      blogCategory: draft.category,
+      tags: draft.tags,
+      primaryKeyword: draft.primaryKeyword,
+      currentLabel: draft.destinationLabel,
+      currentUrl: draft.destinationUrl
+    });
+
+    const normalizedBody = normalizeBlogHtml(String(draft.body || ''), {
+      shopPath: shopDest.destinationUrl || draft.destinationUrl || '/shop',
+      blogSlug: draft.slug
+    });
+
+    if (normalizedBody !== String(draft.body || '')) {
+      const sections = extractSectionsFromHtml(normalizedBody);
+      await BlogPost.findByIdAndUpdate(id, {
+        body: normalizedBody,
+        sections: sections.length ? sections : [],
+        readingMinutes: estimateReadingMinutes(normalizedBody)
+      });
+    }
+
+    const refreshed = await BlogPost.findById(id).lean();
+    const audit = auditBlogPostDocument(refreshed, { siteName: getSiteName() });
     if (!audit.ok) {
       return fail(
         res,
@@ -188,14 +219,6 @@ router.put('/:id/publish', async (req, res) => {
       return fail(res, 404, 'Blog post not found');
     }
 
-    const shopDest = await resolveBlogShopDestination({
-      blogCategory: post.category,
-      tags: post.tags,
-      primaryKeyword: post.primaryKeyword,
-      currentLabel: post.destinationLabel,
-      currentUrl: post.destinationUrl
-    });
-
     if (
       shopDest.destinationUrl !== post.destinationUrl ||
       shopDest.destinationLabel !== post.destinationLabel
@@ -206,7 +229,7 @@ router.put('/:id/publish', async (req, res) => {
       });
     }
 
-    queueSitemapRefresh();
+    queueSitemapRefresh().catch(() => {});
     return ok(res, { post, message: 'Blog published to live site' });
   } catch (err) {
     return fail(res, 400, err.message || 'Publish failed');

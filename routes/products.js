@@ -41,7 +41,8 @@ const ProductSubcategory = require('../models/ProductSubcategory');
 const {
   normalizeGender,
   resolveShopSubcategoryId,
-  validateClothingTaxonomyForPublish
+  validateClothingTaxonomyForPublish,
+  buildSubcategoryProductMatch
 } = require('../lib/shopSubcategories');
 
 const router = express.Router();
@@ -339,11 +340,11 @@ async function buildListFilter(query) {
     const subQ = { slug: subcategorySlug, isActive: true };
     if (filterCategoryId) subQ.category = filterCategoryId;
     if (shopGender) subQ.gender = shopGender;
-    const subRow = await ProductSubcategory.findOne(subQ).select('_id').lean();
+    const subRow = await ProductSubcategory.findOne(subQ).select('_id matchKeywords gender').lean();
     if (!subRow) {
       and.push({ _id: { $in: [] } });
     } else {
-      and.push({ shopSubcategory: subRow._id });
+      and.push(buildSubcategoryProductMatch(subRow));
     }
   }
 
