@@ -33,6 +33,8 @@
     "migrate:grocery": "node scripts/migrateToGroceryCategory.js",
     "migrate:health-beauty": "node scripts/migrateToHealthBeautyCategory.js",
     "migrate:home-care": "node scripts/migrateToHomeCareCategory.js",
+    "import:home-care-imtiaz": "node scripts/importImtiazHomeCareFromHtml.js",
+    "products:remove-home-care-legacy": "node scripts/removeHomeCareLegacyProducts.js",
     "assign:home-care-subcategories": "node scripts/assignHomeCareSubcategories.js",
     "assign:health-beauty-subcategories": "node scripts/assignHealthBeautySubcategories.js",
     "assign:grocery-subcategories": "node scripts/assignGrocerySubcategories.js",
