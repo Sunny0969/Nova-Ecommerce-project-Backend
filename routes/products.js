@@ -213,14 +213,27 @@ async function resolveCategoryId(input) {
 
 const { recalculateProductRatings } = require('../utils/recalculateProductRatings');
 const { generateFakeReviewsForProduct } = require('../utils/generateFakeReviews');
+const {
+  hasDeliveredPurchase,
+  uploadReviewImages,
+  MAX_REVIEW_IMAGES,
+  extractReviewInput,
+  reviewImageFiles,
+  parseReviewRating
+} = require('../lib/reviewHelpers');
+const { normalizeReviewTopic } = require('../lib/reviewTopics');
 
-async function hasDeliveredPurchase(userId, productId) {
-  return Order.exists({
-    user: userId,
-    isDelivered: true,
-    orderItems: { $elemMatch: { product: productId } }
-  });
-}
+const reviewUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 3 * 1024 * 1024, files: MAX_REVIEW_IMAGES + 4 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype || !file.mimetype.startsWith('image/')) {
+      cb(new Error('Only image uploads are allowed'));
+      return;
+    }
+    cb(null, true);
+  }
+});
 
 async function deleteProductImagesFromCloudinary(images) {
   if (!images?.length) return;
@@ -1490,8 +1503,18 @@ router.put(
 
 /**
  * POST /api/products/:id/reviews — authenticated; one review per product
+ * Accepts JSON or multipart (rating, comment, images[]).
  */
-router.post('/:id/reviews', requireJwtAuth, async (req, res) => {
+router.post('/:id/reviews', requireJwtAuth, (req, res, next) => {
+  const ct = String(req.headers['content-type'] || '').toLowerCase();
+  if (ct.includes('multipart/form-data')) {
+    return reviewUpload.any()(req, res, (err) => {
+      if (err) return fail(res, 400, err.message || 'Invalid image upload');
+      next();
+    });
+  }
+  next();
+}, async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) {
@@ -1511,22 +1534,48 @@ router.post('/:id/reviews', requireJwtAuth, async (req, res) => {
       return fail(res, 400, 'You have already reviewed this product');
     }
 
-    const rating = Number(req.body.rating);
-    const comment =
-      req.body.comment != null ? String(req.body.comment).slice(0, 2000) : '';
+    const { rating, comment, topic } = extractReviewInput(req);
 
-    if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
-      return fail(res, 400, 'rating must be between 1 and 5');
+    if (rating == null) {
+      return fail(res, 400, 'Please select a rating between 1 and 5 stars');
+    }
+    if (!topic) {
+      return fail(res, 400, 'Please select what you are reviewing');
+    }
+    if (!comment.trim()) {
+      return fail(res, 400, 'Please write a short review description');
     }
 
     const verified = await hasDeliveredPurchase(req.authUserId, product._id);
+    if (!verified) {
+      return fail(
+        res,
+        403,
+        'Reviews can only be submitted for products from a delivered order'
+      );
+    }
+
+    const imageUploads = reviewImageFiles(req);
+    let images = [];
+    if (imageUploads.length) {
+      try {
+        images = await uploadReviewImages(imageUploads);
+      } catch (upErr) {
+        if (upErr.code === 'UPLOAD_NOT_CONFIGURED') {
+          return fail(res, 503, upErr.message);
+        }
+        throw upErr;
+      }
+    }
 
     const review = await Review.create({
       user: req.authUserId,
       product: product._id,
-      rating: Math.round(rating),
-      comment,
-      isVerifiedPurchase: Boolean(verified)
+      rating,
+      topic,
+      comment: comment.trim(),
+      images,
+      isVerifiedPurchase: true
     });
 
     await recalculateProductRatings(product._id);
@@ -1548,7 +1597,16 @@ router.post('/:id/reviews', requireJwtAuth, async (req, res) => {
 /**
  * PUT /api/products/:id/reviews/:reviewId — update own review
  */
-router.put('/:id/reviews/:reviewId', requireJwtAuth, async (req, res) => {
+router.put('/:id/reviews/:reviewId', requireJwtAuth, (req, res, next) => {
+  const ct = String(req.headers['content-type'] || '').toLowerCase();
+  if (ct.includes('multipart/form-data')) {
+    return reviewUpload.any()(req, res, (err) => {
+      if (err) return fail(res, 400, err.message || 'Invalid image upload');
+      next();
+    });
+  }
+  next();
+}, async (req, res) => {
   try {
     const { id, reviewId } = req.params;
     if (!isValidObjectId(id) || !isValidObjectId(reviewId)) {
@@ -1557,27 +1615,60 @@ router.put('/:id/reviews/:reviewId', requireJwtAuth, async (req, res) => {
 
     const review = await Review.findOne({
       _id: reviewId,
-      product: id,
-      user: req.authUserId
+      product: id
     });
 
     if (!review) {
       return fail(res, 404, 'Review not found');
     }
 
-    const rating =
-      req.body.rating != null ? Number(req.body.rating) : review.rating;
-    const comment =
-      req.body.comment != null
-        ? String(req.body.comment).slice(0, 2000)
-        : review.comment;
+    const user = await User.findById(req.authUserId).select('role');
+    const isAdmin = user?.role === 'admin';
+    const isOwner = String(review.user) === String(req.authUserId);
 
-    if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
-      return fail(res, 400, 'rating must be between 1 and 5');
+    if (!isAdmin && !isOwner) {
+      return fail(res, 403, 'Not allowed to update this review');
     }
 
-    review.rating = Math.round(rating);
-    review.comment = comment;
+    const extracted = extractReviewInput(req);
+    const rating =
+      extracted.rating != null ? extracted.rating : parseReviewRating(review.rating);
+    const comment =
+      extracted.comment.trim() ? extracted.comment : review.comment;
+    const topic = extracted.topic || review.topic;
+
+    if (rating == null) {
+      return fail(res, 400, 'Please select a rating between 1 and 5 stars');
+    }
+    if (!topic) {
+      return fail(res, 400, 'Please select what you are reviewing');
+    }
+    if (!String(comment).trim()) {
+      return fail(res, 400, 'Please write a short review description');
+    }
+
+    review.rating = rating;
+    review.comment = String(comment).trim();
+    review.topic = topic;
+
+    const imageUploads = reviewImageFiles(req);
+    if (imageUploads.length) {
+      const existingCount = Array.isArray(review.images) ? review.images.length : 0;
+      const room = MAX_REVIEW_IMAGES - existingCount;
+      if (room <= 0) {
+        return fail(res, 400, `You can attach up to ${MAX_REVIEW_IMAGES} photos per review`);
+      }
+      try {
+        const uploaded = await uploadReviewImages(imageUploads.slice(0, room));
+        review.images = [...(review.images || []), ...uploaded];
+      } catch (upErr) {
+        if (upErr.code === 'UPLOAD_NOT_CONFIGURED') {
+          return fail(res, 503, upErr.message);
+        }
+        throw upErr;
+      }
+    }
+
     await review.save();
     await recalculateProductRatings(id);
 

@@ -2,6 +2,10 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Order = require('../../models/Order');
 const User = require('../../models/User');
+const {
+  buildReviewSummariesForOrders,
+  buildAdminOrderReviewDetails
+} = require('../../lib/reviewHelpers');
 const { sendOrderStatusUpdateEmail, customerEmail, customerDisplayName } = require('../../lib/email');
 const { ORDER_POPULATE } = require('../../services/orderFromPaymentIntent');
 const { creditCashbackForOrder } = require('../../services/walletService');
@@ -50,25 +54,36 @@ function parseDateEnd(d) {
 
 async function notifyCustomerStatusChange(order, previousStatus) {
   if (!order || previousStatus === order.status) {
-    return { skipped: true, reason: 'unchanged' };
+    return { skipped: true, reason: 'unchanged', sent: false };
   }
 
-  const user = await User.findById(order.user).select('name email').lean();
+  const [user, populated] = await Promise.all([
+    User.findById(order.user).select('name email').lean(),
+    Order.findById(order._id).populate(ORDER_POPULATE).lean()
+  ]);
+  const orderForEmail = populated || order;
   const recipient = {
-    name: customerDisplayName(order, user),
-    email: customerEmail(order, user) || user?.email
+    name: customerDisplayName(orderForEmail, user),
+    email: customerEmail(orderForEmail, user) || user?.email
   };
 
   if (!recipient.email) {
     console.warn('[email] No customer email for status update', order._id);
-    return { skipped: true, reason: 'no_email' };
+    return { skipped: true, reason: 'no_email', sent: false, to: '' };
   }
 
   try {
-    return await sendOrderStatusUpdateEmail(recipient, order, previousStatus);
+    const result = await sendOrderStatusUpdateEmail(recipient, orderForEmail, previousStatus);
+    return {
+      ...result,
+      sent: Boolean(result?.sent),
+      to: recipient.email,
+      skipped: Boolean(result?.skipped),
+      reason: result?.reason || (result?.sent ? undefined : 'send_failed')
+    };
   } catch (mailErr) {
     console.error('Order status email failed:', mailErr);
-    return { skipped: true, reason: mailErr.message };
+    return { skipped: true, reason: mailErr.message, sent: false, to: recipient.email };
   }
 }
 
@@ -193,9 +208,15 @@ router.get('/', async (req, res) => {
 
     const totalPages = Math.ceil(totalCount / limit) || 0;
 
+    const reviewSummaries = await buildReviewSummariesForOrders(orders);
+    const ordersWithReviews = orders.map((order) => ({
+      ...order,
+      reviewSummary: reviewSummaries.get(String(order._id)) || null
+    }));
+
     return ok(res, 200, {
       data: {
-        orders,
+        orders: ordersWithReviews,
         totalCount,
         totalPages,
         currentPage: page
@@ -204,6 +225,36 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('Admin list orders error:', error);
     return fail(res, 500, error.message || 'Failed to list orders');
+  }
+});
+
+/**
+ * GET /api/admin/orders/:id/reviews — customer reviews for this order (admin)
+ */
+router.get('/:id/reviews', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return fail(res, 400, 'Invalid order id');
+    }
+
+    const order = await Order.findById(id).populate(ORDER_POPULATE).lean();
+    if (!order) {
+      return fail(res, 404, 'Order not found');
+    }
+
+    const { itemReviews, reviews } = await buildAdminOrderReviewDetails(order);
+
+    return ok(res, 200, {
+      data: {
+        order,
+        itemReviews,
+        reviews
+      }
+    });
+  } catch (error) {
+    console.error('Admin order reviews error:', error);
+    return fail(res, 500, error.message || 'Failed to load order reviews');
   }
 });
 
@@ -265,7 +316,18 @@ router.put('/:id/status', async (req, res) => {
     }
 
     const previousStatus = order.status;
+    if (previousStatus === nextStatus) {
+      const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
+      return ok(res, 200, {
+        message: 'Status unchanged — no email sent',
+        data: { order: populated, emailNotified: false, emailSkipped: true, emailReason: 'unchanged' }
+      });
+    }
+
     order.status = nextStatus;
+    if (nextStatus === 'cancelled' && req.body?.cancelReason != null) {
+      order.cancelReason = String(req.body.cancelReason || '').trim().slice(0, 1000);
+    }
     if (nextStatus === 'delivered') {
       order.isDelivered = true;
       order.deliveredAt = order.deliveredAt || new Date();
@@ -282,11 +344,27 @@ router.put('/:id/status', async (req, res) => {
     const emailResult = await notifyCustomerStatusChange(order, previousStatus);
 
     const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
+    const emailNotified = Boolean(emailResult?.sent);
+    let message = 'Order status updated';
+    if (emailNotified) {
+      message = `Order status updated — email sent to ${emailResult.to}`;
+    } else if (emailResult?.reason === 'no_email') {
+      message = 'Order status updated — no customer email on file';
+    } else if (emailResult?.reason === 'not_configured' || emailResult?.reason === 'railway_smtp_blocked') {
+      message = 'Order status updated — email not configured on server (set RESEND_API_KEY on Railway)';
+    } else if (emailResult?.skipped) {
+      message = `Order status updated — email could not be sent (${emailResult.reason || 'unknown'})`;
+    }
+
     return ok(res, 200, {
-      message: emailResult?.sent
-        ? 'Order status updated — customer notified by email'
-        : 'Order status updated',
-      data: { order: populated, emailNotified: Boolean(emailResult?.sent) }
+      message,
+      data: {
+        order: populated,
+        emailNotified,
+        emailSkipped: Boolean(emailResult?.skipped),
+        emailReason: emailResult?.reason || null,
+        emailTo: emailResult?.to || null
+      }
     });
   } catch (error) {
     if (error.name === 'ValidationError') {
@@ -375,9 +453,19 @@ router.put('/:id/paid', async (req, res) => {
     const emailResult = await notifyCustomerStatusChange(order, previousStatus);
 
     const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
+    const emailNotified = Boolean(emailResult?.sent);
+    let message = paid ? 'Order marked as paid' : 'Order marked as unpaid';
+    if (emailNotified) {
+      message += ` — email sent to ${emailResult.to}`;
+    }
     return ok(res, 200, {
-      message: paid ? 'Order marked as paid' : 'Order marked as unpaid',
-      data: { order: populated, emailNotified: Boolean(emailResult?.sent) }
+      message,
+      data: {
+        order: populated,
+        emailNotified,
+        emailTo: emailResult?.to || null,
+        emailReason: emailResult?.reason || null
+      }
     });
   } catch (error) {
     console.error('Admin mark paid error:', error);
@@ -420,16 +508,24 @@ router.put('/:id/tracking', async (req, res) => {
     await order.save();
 
     let emailResult = await notifyCustomerStatusChange(order, previousStatus);
-    if (emailResult?.skipped && previousStatus === order.status) {
+    if (emailResult?.skipped && emailResult?.reason === 'unchanged') {
       emailResult = await notifyCustomerStatusChange(order, 'processing');
     }
 
     const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
+    const emailNotified = Boolean(emailResult?.sent);
     return ok(res, 200, {
-      message: emailResult?.sent
-        ? 'Tracking saved — customer notified by email'
-        : 'Tracking saved and customer notified',
-      data: { order: populated, emailNotified: Boolean(emailResult?.sent) }
+      message: emailNotified
+        ? `Tracking saved — email sent to ${emailResult.to}`
+        : emailResult?.reason === 'no_email'
+          ? 'Tracking saved — no customer email on file'
+          : 'Tracking saved',
+      data: {
+        order: populated,
+        emailNotified,
+        emailTo: emailResult?.to || null,
+        emailReason: emailResult?.reason || null
+      }
     });
   } catch (error) {
     console.error('Admin tracking error:', error);

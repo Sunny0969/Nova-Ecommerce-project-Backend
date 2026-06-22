@@ -9,6 +9,7 @@ const { buildCheckoutSnapshot, buildGuestCheckoutSnapshot } = require('../utils/
 const { EASYPAISA_NUMBER, PAYMENT_METHODS, isAllowedManualPaymentMethod } = require('../lib/paymentConfig');
 const { ORDER_POPULATE } = require('./orderFromPaymentIntent');
 const { resolveGuestCheckoutUser } = require('../lib/guestCheckoutUser');
+const { persistShippingAddressAfterOrder } = require('../lib/savedAddresses');
 const {
   getWalletBalance,
   computeWalletApplication,
@@ -209,6 +210,8 @@ async function finalizeOrderWithManualPayment(
       User.findById(userId).select('name email')
     ]);
 
+    await persistShippingAddressAfterOrder(userId, addr);
+
     return { order, populated, duplicate: false, emailNotify: { user, addr } };
   } catch (err) {
     for (const d of decremented.reverse()) {
@@ -363,6 +366,8 @@ async function createManualOrderFromSnapshot(
       Order.findById(order._id).populate(ORDER_POPULATE),
       User.findById(userId).select('name email')
     ]);
+
+    await persistShippingAddressAfterOrder(userId, addr);
 
     return { order, populated, duplicate: false, emailNotify: { user, addr } };
   } catch (err) {

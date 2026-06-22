@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const multer = require('multer');
 const mongoose = require('mongoose');
 const router = express.Router();
@@ -9,6 +10,13 @@ const { mergeSessionCartIntoUserCart } = require('../utils/cartSync');
 const { isActivatableGuestAccount, activateGuestAccount } = require('../lib/guestAccount');
 const { signToken, verifyToken, requireJwtAuth } = require('../middleware/jwtAuth');
 const { uploadImageBuffer } = require('../lib/cloudinary');
+const { sendPasswordResetEmail } = require('../lib/email');
+const {
+  normalizeShippingAddress,
+  syncSavedShippingFromDefault,
+  upsertUserSavedAddress,
+  migrateLegacyShippingAddress
+} = require('../lib/savedAddresses');
 
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
@@ -91,21 +99,7 @@ function isValidObjectId(id) {
 }
 
 function normalizeAddressInput(b = {}) {
-  return {
-    label: String(b.label != null ? b.label : 'Home')
-      .trim()
-      .slice(0, 80),
-    firstName: String(b.firstName || '').trim(),
-    lastName: String(b.lastName || '').trim(),
-    email: String(b.email || '').trim(),
-    phone: String(b.phone || '').trim(),
-    street: String(b.street || '').trim(),
-    city: String(b.city || '').trim(),
-    state: String(b.state || '').trim(),
-    zipCode: String(b.zipCode || '').trim(),
-    country: String(b.country || '').trim(),
-    isDefault: Boolean(b.isDefault)
-  };
+  return normalizeShippingAddress(b);
 }
 
 function normalizeEmail(email) {
@@ -119,22 +113,6 @@ function isReservedAdminEmail(email) {
   const reserved = normalizeEmail(process.env.ADMIN_EMAIL || '');
   if (!reserved) return false;
   return normalizeEmail(email) === reserved;
-}
-
-function syncSavedShippingFromDefault(user) {
-  const def = (user.savedAddresses || []).find((a) => a.isDefault);
-  if (!def) return;
-  user.savedShippingAddress = {
-    firstName: def.firstName,
-    lastName: def.lastName,
-    email: def.email,
-    phone: def.phone,
-    street: def.street,
-    city: def.city,
-    state: def.state,
-    zipCode: def.zipCode,
-    country: def.country
-  };
 }
 
 // Register new user (password hashed in User model pre-save with bcrypt)
@@ -419,7 +397,13 @@ router.patch('/me/shipping', requireJwtAuth, async (req, res) => {
       zipCode: String(b.zipCode || '').trim(),
       country: String(b.country || '').trim()
     };
-    await User.findByIdAndUpdate(req.authUserId, { $set: { savedShippingAddress: doc } });
+    const result = await upsertUserSavedAddress(req.authUserId, doc, { setAsDefault: true });
+    if (!result.saved) {
+      return res.status(400).json({
+        success: false,
+        message: 'Street, city, and ZIP/postal code are required'
+      });
+    }
     res.json({ success: true, message: 'Shipping address saved' });
   } catch (error) {
     console.error('Save shipping error:', error);
@@ -564,6 +548,7 @@ router.post(
  */
 router.get('/addresses', requireJwtAuth, async (req, res) => {
   try {
+    await migrateLegacyShippingAddress(req.authUserId);
     const user = await User.findById(req.authUserId).select('savedAddresses');
     res.json({
       success: true,
@@ -744,6 +729,105 @@ router.delete('/addresses/:addressId', requireJwtAuth, async (req, res) => {
   } catch (error) {
     console.error('Delete address error:', error);
     res.status(500).json({ success: false, message: 'Could not delete address' });
+  }
+});
+
+const FORGOT_PASSWORD_GENERIC_MESSAGE =
+  'If an account exists for that email, we sent a password reset link. Check your inbox and spam folder. The link expires in 15 minutes.';
+
+/**
+ * POST /api/auth/forgot-password — email a one-time reset link (public)
+ */
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '')
+      .trim()
+      .toLowerCase();
+    if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please enter a valid email address'
+      });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user || user.isActive === false) {
+      return res.json({ success: true, message: FORGOT_PASSWORD_GENERIC_MESSAGE });
+    }
+
+    const resetToken = user.getResetPasswordToken();
+    await user.save({ validateBeforeSave: false });
+
+    try {
+      await sendPasswordResetEmail(user, resetToken);
+    } catch (mailErr) {
+      user.resetPasswordToken = undefined;
+      user.resetPasswordExpire = undefined;
+      await user.save({ validateBeforeSave: false });
+      console.error('Forgot password email error:', mailErr);
+      return res.status(503).json({
+        success: false,
+        message:
+          'We could not send the reset email right now. Please try again in a few minutes or contact support.'
+      });
+    }
+
+    return res.json({ success: true, message: FORGOT_PASSWORD_GENERIC_MESSAGE });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Could not process your request. Please try again.'
+    });
+  }
+});
+
+/**
+ * POST /api/auth/reset-password — set a new password using email token (public)
+ */
+router.post('/reset-password', async (req, res) => {
+  try {
+    const token = String(req.body?.token || '').trim();
+    const password = String(req.body?.password || '');
+
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Reset token is required' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters'
+      });
+    }
+
+    const hashed = crypto.createHash('sha256').update(token).digest('hex');
+    const user = await User.findOne({
+      resetPasswordToken: hashed,
+      resetPasswordExpire: { $gt: Date.now() }
+    }).select('+password +resetPasswordToken +resetPasswordExpire');
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'This reset link is invalid or has expired. Please request a new password reset.'
+      });
+    }
+
+    user.password = password;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: 'Your password has been updated. You can sign in now.'
+    });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Could not reset password. Please try again.'
+    });
   }
 });
 

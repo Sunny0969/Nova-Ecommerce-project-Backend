@@ -20,6 +20,7 @@ const {
   sendOrderHeldForFraudReviewEmail,
   toPlainDoc
 } = require('../lib/email');
+const { persistShippingAddressAfterOrder } = require('../lib/savedAddresses');
 
 const ORDER_POPULATE = [
   { path: 'user', select: 'name email' },
@@ -426,6 +427,8 @@ async function finalizeOrderFromPaymentIntent(pi, options = {}) {
       emailNotify = { user, addr: orderShipAddr };
     }
 
+    await persistShippingAddressAfterOrder(userId, orderShipAddr);
+
     return { order, populated, duplicate: false, emailNotify };
   } catch (err) {
     for (const d of decremented.reverse()) {
@@ -645,6 +648,8 @@ async function finalizeGuestStripeOrder(
     if (snapshot.couponId) {
       await Coupon.findByIdAndUpdate(snapshot.couponId, { $inc: { usedCount: 1 } });
     }
+
+    await persistShippingAddressAfterOrder(userId, addr);
 
     return { order, populated, duplicate: false, emailNotify: { user, addr } };
   } catch (err) {

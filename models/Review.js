@@ -25,6 +25,23 @@ const reviewSchema = new mongoose.Schema(
       default: '',
       maxlength: [2000, 'Comment is too long']
     },
+    /** What the customer is highlighting (dropdown on review form). */
+    topic: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 40,
+      index: true
+    },
+    images: {
+      type: [
+        {
+          url: { type: String, trim: true, default: '' },
+          publicId: { type: String, trim: true, default: '' }
+        }
+      ],
+      default: () => []
+    },
     isVerifiedPurchase: {
       type: Boolean,
       default: false,

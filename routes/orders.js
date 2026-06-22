@@ -18,6 +18,7 @@ const { finalizeOrderWithManualPayment } = require('../services/orderManualPayme
 const { isAllowedManualPaymentMethod, EASYPAISA_NUMBER } = require('../lib/paymentConfig');
 const { uploadImageBuffer, ensureConfigured } = require('../lib/cloudinary');
 const { hydratePaymentProof } = require('../utils/paymentProof');
+const { buildOrderItemReviewMeta } = require('../lib/reviewHelpers');
 
 const proofUpload = multer({
   storage: multer.memoryStorage(),
@@ -75,8 +76,16 @@ async function incrementStockRollback(productId, qty) {
   );
 }
 
+/** User ref may be an ObjectId or a populated { _id, name, email } document. */
+function orderOwnerId(order) {
+  const u = order?.user;
+  if (u == null) return '';
+  if (typeof u === 'object' && u._id != null) return String(u._id);
+  return String(u);
+}
+
 async function userCanViewOrder(req, order) {
-  if (String(order.user) === String(req.authUserId)) return true;
+  if (orderOwnerId(order) === String(req.authUserId)) return true;
   const user = await User.findById(req.authUserId).select('role');
   return user?.role === 'admin';
 }
@@ -263,7 +272,7 @@ router.post('/:id/payment-proof', proofUpload.single('proof'), async (req, res) 
       return fail(res, 404, 'Order not found');
     }
 
-    if (String(order.user) !== String(req.authUserId)) {
+    if (orderOwnerId(order) !== String(req.authUserId)) {
       return fail(res, 403, 'Not allowed to update this order');
     }
 
@@ -449,7 +458,7 @@ router.post('/cancel/:id', async (req, res) => {
       round2(Number(order.walletAmountUsed) || 0) + round2(Number(order.totalPrice) || 0);
     if (refundTotal > 0) {
       try {
-        await refundOrderToWallet(order.user, order, {
+        await refundOrderToWallet(orderOwnerId(order), order, {
           amount: refundTotal,
           description: `Refund for cancelled order #${String(order._id).slice(-8).toUpperCase()} (added to Bazaar Wallet)`
         });
@@ -505,7 +514,9 @@ router.get('/:id', async (req, res) => {
 
     hydratePaymentProof(order);
 
-    res.json({ success: true, data: { order } });
+    const itemReviews = await buildOrderItemReviewMeta(req.authUserId, order);
+
+    res.json({ success: true, data: { order, itemReviews } });
   } catch (error) {
     if (error.name === 'CastError') {
       return fail(res, 400, 'Invalid order id');
