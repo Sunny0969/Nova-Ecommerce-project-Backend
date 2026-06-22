@@ -19,6 +19,10 @@ const {
   diffPublicIdsToRemove,
   mergeVariantOptionUploads
 } = require('../lib/variantAxes');
+const {
+  computeCatalogStock,
+  applyVariantStockToProductStock
+} = require('../lib/variantStock');
 const { productNameQueryForBrand } = require('../lib/brandFilters');
 const { queueProductEmbeddingUpdate, hybridSearch, suggestQueries } = require('../services/aiSearch');
 const { logSearchQuery, logSearchClick, getTrendingSearches } = require('../services/searchAnalytics');
@@ -117,7 +121,8 @@ function shapeProductDoc(doc) {
   }
 
   const stock = Number(d.stock);
-  const stockQuantity = Number.isFinite(stock) ? Math.max(0, Math.floor(stock)) : 0;
+  const variantAxes = sanitizeVariantAxes(d.variantAxes || {});
+  const stockQuantity = computeCatalogStock(stock, variantAxes);
 
   const price = Number(d.price);
   const comparePrice =
@@ -176,7 +181,7 @@ function shapeProductDoc(doc) {
       d.variantGroupKey != null && String(d.variantGroupKey).trim()
         ? String(d.variantGroupKey).trim()
         : undefined,
-    variantAxes: sanitizeVariantAxes(d.variantAxes || {}),
+    variantAxes,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt
   };
@@ -962,12 +967,13 @@ router.post(
       }
 
       const legacy = variantAxesToLegacyFlat(variantAxes);
+      const syncedStock = applyVariantStockToProductStock(parsed.stock, variantAxes);
 
       const createPayload = {
         name: parsed.name,
         category: categoryId,
         price: parsed.price,
-        stock: parsed.stock,
+        stock: syncedStock,
         description: parsed.description,
         shortDescription: parsed.shortDescription,
         comparePrice: parsed.comparePrice ?? undefined,
@@ -1334,6 +1340,7 @@ router.put(
           product.color = leg.color;
           product.texture = leg.texture;
           product.size = leg.size;
+          product.stock = applyVariantStockToProductStock(product.stock, axes);
         } else {
           if (parsed.color !== undefined) product.color = parsed.color || '';
           if (parsed.texture !== undefined) product.texture = parsed.texture || '';
@@ -1386,6 +1393,7 @@ router.put(
           product.color = leg.color;
           product.texture = leg.texture;
           product.size = leg.size;
+          product.stock = applyVariantStockToProductStock(product.stock, axes);
         } else {
           if (body.color !== undefined) product.color = String(body.color || '').trim().slice(0, 120);
           if (body.texture !== undefined) product.texture = String(body.texture || '').trim().slice(0, 120);
