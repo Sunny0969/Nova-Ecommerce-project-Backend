@@ -1181,8 +1181,9 @@ router.put(
 
       const oldImages = JSON.parse(JSON.stringify(product.images || []));
 
+      let parsed = null;
       if (req.is('multipart/form-data')) {
-        const parsed = parseMultipartBody(req);
+        parsed = parseMultipartBody(req);
         if (parsed.name) product.name = parsed.name;
         if (parsed.category !== undefined && parsed.category !== '') {
           const cid = await resolveCategoryId(parsed.category);
@@ -1422,13 +1423,14 @@ router.put(
         }
       }
 
-      const taxonomyFields = req.is('multipart/form-data')
-        ? { shopGender: parsed.shopGender, shopSubcategory: parsed.shopSubcategory }
-        : {
-            shopGender:
-              req.body.shopGender !== undefined ? normalizeGender(req.body.shopGender) : undefined,
-            shopSubcategory: req.body.shopSubcategory
-          };
+      const taxonomyFields =
+        parsed != null
+          ? { shopGender: parsed.shopGender, shopSubcategory: parsed.shopSubcategory }
+          : {
+              shopGender:
+                req.body.shopGender !== undefined ? normalizeGender(req.body.shopGender) : undefined,
+              shopSubcategory: req.body.shopSubcategory
+            };
       const taxonomy = await resolveShopTaxonomyFields(taxonomyFields, product.category);
       if (taxonomy.error) return fail(res, 400, taxonomy.error);
       if (taxonomy.shopGender !== undefined) product.shopGender = taxonomy.shopGender;
