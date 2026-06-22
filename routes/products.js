@@ -21,7 +21,9 @@ const {
 } = require('../lib/variantAxes');
 const {
   computeCatalogStock,
-  applyVariantStockToProductStock
+  applyVariantStockToProductStock,
+  computeCatalogPrice,
+  applyVariantPriceToProductPrice
 } = require('../lib/variantStock');
 const { productNameQueryForBrand } = require('../lib/brandFilters');
 const { queueProductEmbeddingUpdate, hybridSearch, suggestQueries } = require('../services/aiSearch');
@@ -125,6 +127,7 @@ function shapeProductDoc(doc) {
   const stockQuantity = computeCatalogStock(stock, variantAxes);
 
   const price = Number(d.price);
+  const resolvedPrice = computeCatalogPrice(price, variantAxes);
   const comparePrice =
     d.comparePrice != null ? Number(d.comparePrice) : undefined;
 
@@ -144,13 +147,13 @@ function shapeProductDoc(doc) {
     slug: d.slug,
     name: cleanedDesc.name,
     category: categorySlug || 'fashion',
-    price: Number.isFinite(price) ? price : 0,
+    price: Number.isFinite(resolvedPrice) ? resolvedPrice : 0,
     comparePrice: Number.isFinite(comparePrice) ? comparePrice : undefined,
     originalPrice: Number.isFinite(comparePrice) ? comparePrice : undefined,
     isOnSale:
       Number.isFinite(comparePrice) &&
-      Number.isFinite(price) &&
-      comparePrice > price &&
+      Number.isFinite(resolvedPrice) &&
+      comparePrice > resolvedPrice &&
       comparePrice > 0,
     emoji: '📦',
     imageUrl: firstImg,
@@ -968,11 +971,12 @@ router.post(
 
       const legacy = variantAxesToLegacyFlat(variantAxes);
       const syncedStock = applyVariantStockToProductStock(parsed.stock, variantAxes);
+      const syncedPrice = applyVariantPriceToProductPrice(parsed.price, variantAxes);
 
       const createPayload = {
         name: parsed.name,
         category: categoryId,
-        price: parsed.price,
+        price: syncedPrice,
         stock: syncedStock,
         description: parsed.description,
         shortDescription: parsed.shortDescription,
@@ -1341,6 +1345,7 @@ router.put(
           product.texture = leg.texture;
           product.size = leg.size;
           product.stock = applyVariantStockToProductStock(product.stock, axes);
+          product.price = applyVariantPriceToProductPrice(product.price, axes);
         } else {
           if (parsed.color !== undefined) product.color = parsed.color || '';
           if (parsed.texture !== undefined) product.texture = parsed.texture || '';
@@ -1394,6 +1399,7 @@ router.put(
           product.texture = leg.texture;
           product.size = leg.size;
           product.stock = applyVariantStockToProductStock(product.stock, axes);
+          product.price = applyVariantPriceToProductPrice(product.price, axes);
         } else {
           if (body.color !== undefined) product.color = String(body.color || '').trim().slice(0, 120);
           if (body.texture !== undefined) product.texture = String(body.texture || '').trim().slice(0, 120);
