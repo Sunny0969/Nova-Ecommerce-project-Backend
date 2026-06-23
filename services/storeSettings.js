@@ -1,6 +1,10 @@
 const StoreSettings = require('../models/StoreSettings');
 const { getOrSet, del, CACHE_KEYS } = require('../lib/apiCache');
 const { invalidateStoreSettingsCache } = require('../lib/invalidatePublicCache');
+const {
+  normalizeWeightShippingTiers,
+  validateWeightShippingTiers
+} = require('../lib/weightShippingTiers');
 
 const DEFAULTS = {
   freeShippingMin: 2026,
@@ -13,6 +17,7 @@ const DEFAULTS = {
   shippingUpToThresholdKg: 300,
   shippingAdditionalPerKgOver: 150,
   defaultProductWeightKg: 1,
+  weightShippingTiers: [],
   walletCashbackEnabled: true,
   walletCashbackMinOrder: 5000,
   walletCashbackAmount: 500
@@ -47,6 +52,7 @@ function normalizeDoc(doc) {
       0.01,
       Number(doc.defaultProductWeightKg ?? DEFAULTS.defaultProductWeightKg)
     ),
+    weightShippingTiers: normalizeWeightShippingTiers(doc.weightShippingTiers),
     walletCashbackEnabled:
       doc.walletCashbackEnabled !== undefined
         ? Boolean(doc.walletCashbackEnabled)
@@ -109,6 +115,16 @@ async function getStoreSettings() {
 async function updateStoreSettings(patch) {
   const current = await getStoreSettings();
 
+  let tiers = current.weightShippingTiers;
+  if (patch.weightShippingTiers != null) {
+    const normalized = normalizeWeightShippingTiers(patch.weightShippingTiers);
+    const validation = validateWeightShippingTiers(normalized);
+    if (!validation.ok) {
+      throw new Error(validation.message);
+    }
+    tiers = validation.tiers;
+  }
+
   const next = {
     freeShippingMin: patchNumber(patch, current, 'freeShippingMin'),
     shippingStandard: patchNumber(patch, current, 'shippingStandard'),
@@ -125,6 +141,7 @@ async function updateStoreSettings(patch) {
     shippingUpToThresholdKg: patchNumber(patch, current, 'shippingUpToThresholdKg'),
     shippingAdditionalPerKgOver: patchNumber(patch, current, 'shippingAdditionalPerKgOver'),
     defaultProductWeightKg: patchNumber(patch, current, 'defaultProductWeightKg', { min: 0.01 }),
+    weightShippingTiers: tiers,
     walletCashbackEnabled:
       patch.walletCashbackEnabled != null
         ? patch.walletCashbackEnabled === true || patch.walletCashbackEnabled === 'true'

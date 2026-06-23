@@ -19,6 +19,7 @@ const {
   adminListProductsUncasted
 } = require('../../lib/productQueries');
 const { invalidateCatalogCache } = require('../../lib/invalidatePublicCache');
+const { computeAdjustedValue, normalizeAdjustment } = require('../../lib/bulkProductAdjust');
 
 const router = express.Router();
 
@@ -131,6 +132,29 @@ async function attachCategoryToOneProductLean(p) {
 
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Shared list filters for GET /, GET /ids, and bulk adjust by filter. */
+async function buildAdminListFilterFromQuery(query) {
+  const and = [];
+  const q = String(query?.search || '').trim();
+  if (q) {
+    and.push({
+      $or: [
+        { name: new RegExp(escapeRegex(q), 'i') },
+        { slug: new RegExp(escapeRegex(q), 'i') }
+      ]
+    });
+  }
+
+  const status = String(query?.status || 'all').toLowerCase();
+  if (status === 'published') and.push({ isPublished: true });
+  else if (status === 'draft' || status === 'unpublished') and.push({ isPublished: false });
+
+  const categoryFilter = await buildProductCategoryFilter(query?.category);
+  if (categoryFilter) and.push(categoryFilter);
+
+  return and.length ? { $and: and } : {};
 }
 
 async function deleteProductImagesFromCloudinary(images) {
@@ -346,26 +370,7 @@ router.get('/', async (req, res) => {
       maxLimit: ADMIN_LIST_MAX_LIMIT
     });
 
-    const and = [];
-    const q = String(req.query.search || '').trim();
-    if (q) {
-      and.push({
-        $or: [
-          { name: new RegExp(escapeRegex(q), 'i') },
-          { slug: new RegExp(escapeRegex(q), 'i') }
-        ]
-      });
-    }
-
-    const status = String(req.query.status || 'all').toLowerCase();
-    if (status === 'published') and.push({ isPublished: true });
-    else if (status === 'draft' || status === 'unpublished') and.push({ isPublished: false });
-
-    const rawCat = req.query.category;
-    const categoryFilter = await buildProductCategoryFilter(rawCat);
-    if (categoryFilter) and.push(categoryFilter);
-
-    const filter = and.length ? { $and: and } : {};
+    const filter = await buildAdminListFilterFromQuery(req.query);
     const adminSelect = `${ADMIN_LIST_SELECT} lowStockThreshold submittedByStaff`;
 
     const { rows: rawRows, totalCount } = await adminListProductsUncasted(filter, {
@@ -386,6 +391,23 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('Admin list products error:', error);
     fail(res, 500, error.message || 'Failed to fetch products');
+  }
+});
+
+/**
+ * GET /api/admin/products/ids — all product ids matching list filters (for select-all + bulk adjust)
+ */
+router.get('/ids', requireMountedAdmin, async (req, res) => {
+  try {
+    const filter = await buildAdminListFilterFromQuery(req.query);
+    const rows = await Product.find(filter).select('_id').lean();
+    ok(res, {
+      ids: rows.map((p) => String(p._id)),
+      totalCount: rows.length
+    });
+  } catch (error) {
+    console.error('Admin product ids error:', error);
+    fail(res, 500, error.message || 'Failed to fetch product ids');
   }
 });
 
@@ -422,26 +444,78 @@ router.get('/:id', async (req, res) => {
  * POST /api/admin/products/bulk — { ids: string[], action: 'publish'|'unpublish'|'delete' }
  * delete = soft (unpublish). Use action 'deleteHard' to permanently remove (and reviews/images).
  */
+async function resolveBulkProductIds(req, { ids, applyToFilter, filterQuery }) {
+  if (applyToFilter) {
+    const mongoFilter = await buildAdminListFilterFromQuery(filterQuery || {});
+    const rows = await Product.find(mongoFilter).select('_id submittedByStaff').lean();
+    if (!req?.adminUser) {
+      return rows.filter((p) => requireOwnershipOrAdmin(req, p)).map((p) => String(p._id));
+    }
+    return rows.map((p) => String(p._id));
+  }
+
+  if (!Array.isArray(ids) || !ids.length) return [];
+  const valid = [...new Set(ids.map(String))].filter((id) => isValidObjectId(id));
+  if (!valid.length) return [];
+
+  if (!req?.adminUser) {
+    const products = await Product.find({ _id: { $in: valid } }).select('submittedByStaff').lean();
+    return products.filter((p) => requireOwnershipOrAdmin(req, p)).map((p) => String(p._id));
+  }
+  return valid;
+}
+
 router.post('/bulk', requireMountedAdmin, async (req, res) => {
   try {
-    const { ids, action } = req.body || {};
-    if (!Array.isArray(ids) || !ids.length) {
-      return fail(res, 400, 'ids array is required');
-    }
-    const valid = [...new Set(ids.map(String))].filter((id) => isValidObjectId(id));
-    if (!valid.length) {
-      return fail(res, 400, 'No valid product ids');
+    const { ids, action, applyToFilter, filter: filterQuery, adjustment } = req.body || {};
+
+    if (action === 'adjust') {
+      const adj = normalizeAdjustment(adjustment);
+      if (!adj) {
+        return fail(
+          res,
+          400,
+          'Invalid adjustment. Use field (price|comparePrice|costPrice|stock|weightKg), mode (percent|fixed), direction (increase|decrease), and value > 0'
+        );
+      }
+
+      const valid = await resolveBulkProductIds(req, { ids, applyToFilter, filterQuery });
+      if (!valid.length) {
+        return fail(res, 400, 'No products matched for adjustment');
+      }
+
+      const selectFields = `_id ${adj.field}`;
+      const products = await Product.find({ _id: { $in: valid } }).select(selectFields).lean();
+      const ops = [];
+
+      for (const p of products) {
+        const current = p[adj.field];
+        const next = computeAdjustedValue(current, adj);
+        if (next === null) continue;
+        if (current != null && Number(current) === Number(next)) continue;
+        ops.push({
+          updateOne: {
+            filter: { _id: p._id },
+            update: { $set: { [adj.field]: next } }
+          }
+        });
+      }
+
+      if (!ops.length) {
+        return ok(res, { modified: 0, matched: products.length });
+      }
+
+      const r = await Product.bulkWrite(ops);
+      invalidateCatalogCache();
+      return ok(res, { modified: r.modifiedCount, matched: products.length, field: adj.field });
     }
 
-    // Ownership filtering for staff requests
-    if (!req?.adminUser) {
-      const products = await Product.find({ _id: { $in: valid } }).select('submittedByStaff').lean();
-      const allowed = products.filter((p) => requireOwnershipOrAdmin(req, p)).map((p) => String(p._id));
-      if (!allowed.length) {
-        return res.status(403).json({ success: false, message: "You don't have permission for this action" });
-      }
-      valid.length = 0;
-      valid.push(...allowed);
+    if (!applyToFilter && (!Array.isArray(ids) || !ids.length)) {
+      return fail(res, 400, 'ids array is required');
+    }
+    const valid = await resolveBulkProductIds(req, { ids, applyToFilter, filterQuery });
+    if (!valid.length) {
+      return fail(res, 400, applyToFilter ? 'No products matched your filters' : 'No valid product ids');
     }
 
     if (action === 'publish') {
@@ -492,7 +566,7 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
     return fail(
       res,
       400,
-      'Invalid action. Use publish, unpublish, delete, or deleteHard'
+      'Invalid action. Use publish, unpublish, delete, deleteHard, or adjust'
     );
   } catch (error) {
     console.error('Admin bulk products error:', error);

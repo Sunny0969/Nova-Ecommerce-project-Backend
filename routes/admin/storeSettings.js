@@ -41,7 +41,8 @@ router.put('/', async (req, res) => {
       weightShippingThresholdKg: b.weightShippingThresholdKg,
       shippingUpToThresholdKg: b.shippingUpToThresholdKg,
       shippingAdditionalPerKgOver: b.shippingAdditionalPerKgOver,
-      defaultProductWeightKg: b.defaultProductWeightKg
+      defaultProductWeightKg: b.defaultProductWeightKg,
+      weightShippingTiers: b.weightShippingTiers
     });
     ok(res, data, 'Shipping and tax settings saved');
   } catch (error) {

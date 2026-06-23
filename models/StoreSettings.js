@@ -62,6 +62,17 @@ const storeSettingsSchema = new mongoose.Schema(
       default: 1,
       min: 0.01
     },
+    /** Weight ranges → flat standard shipping price (kg inclusive). */
+    weightShippingTiers: {
+      type: [
+        {
+          minKg: { type: Number, required: true, min: 0 },
+          maxKg: { type: Number, required: true, min: 0 },
+          price: { type: Number, required: true, min: 0 }
+        }
+      ],
+      default: []
+    },
     walletCashbackEnabled: {
       type: Boolean,
       default: true

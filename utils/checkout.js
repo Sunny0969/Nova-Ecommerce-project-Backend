@@ -6,6 +6,7 @@ const { getStoreSettings } = require('../services/storeSettings');
 const Coupon = require('../models/Coupon');
 const { validateCouponForGuestItems } = require('./cartCoupon');
 const { computeCartWeightKg, resolveStandardShippingPrice, shouldUseFlatStandardShipping } = require('../lib/shippingWeight');
+const { findWeightShippingTier, formatWeightTierRange, hasWeightShippingTiers } = require('../lib/weightShippingTiers');
 
 const ITEMS_POPULATE = {
   path: 'items.product',
@@ -41,7 +42,10 @@ function calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg = 
 
   const freeMin = Number(settings?.freeShippingMin);
   const skipFreeShipping =
-    d === 'standard' && cartLines && shouldUseFlatStandardShipping(cartLines, settings);
+    d === 'standard' &&
+    cartLines &&
+    (shouldUseFlatStandardShipping(cartLines, settings) ||
+      (settings?.weightShippingEnabled !== false && hasWeightShippingTiers(settings)));
   if (
     !skipFreeShipping &&
     d === 'standard' &&
@@ -71,6 +75,19 @@ function computeTotalsPreview(itemsPrice, discountAmount, deliveryOption, settin
   const shippingPrice = calculateShipping(itemsPrice, deliveryOption, settings, cartWeightKg, cartLines);
   const taxPrice = calculateTaxPrice(subAfterDisc, settings);
   const totalPrice = round2(Math.max(0, subAfterDisc + shippingPrice + taxPrice));
+
+  let weightShippingTierLabel;
+  if (
+    (deliveryOption || 'standard') === 'standard' &&
+    settings?.weightShippingEnabled !== false &&
+    cartWeightKg != null &&
+    cartLines &&
+    !shouldUseFlatStandardShipping(cartLines, settings)
+  ) {
+    const tier = findWeightShippingTier(cartWeightKg, settings?.weightShippingTiers);
+    if (tier) weightShippingTierLabel = formatWeightTierRange(tier);
+  }
+
   return {
     itemsPrice,
     discountAmount: disc,
@@ -78,7 +95,8 @@ function computeTotalsPreview(itemsPrice, discountAmount, deliveryOption, settin
     shippingPrice,
     taxPrice,
     totalPrice,
-    cartWeightKg: cartWeightKg != null ? cartWeightKg : undefined
+    cartWeightKg: cartWeightKg != null ? cartWeightKg : undefined,
+    weightShippingTierLabel
   };
 }
 
