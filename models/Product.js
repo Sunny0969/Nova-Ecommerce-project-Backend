@@ -172,7 +172,16 @@ const productSchema = new mongoose.Schema(
       type: Number,
       required: true,
       default: 0,
-      min: [0, 'Stock cannot be negative'],
+      index: true
+    },
+    /**
+     * Optional override for Offer availability in SEO/schema.
+     * When empty, derived from stock (and isPublished).
+     */
+    availabilityStatus: {
+      type: String,
+      enum: ['', 'InStock', 'OutOfStock', 'PreOrder', 'Discontinued'],
+      default: '',
       index: true
     },
     /** When stock falls below this, show low-stock in admin/ops (null = not set) */
@@ -186,6 +195,46 @@ const productSchema = new mongoose.Schema(
       trim: true,
       sparse: true,
       index: true
+    },
+    /** Product brand for SEO / schema (e.g. National, Palmolive). */
+    brandName: {
+      type: String,
+      trim: true,
+      maxlength: [120, 'Brand name is too long'],
+      default: '',
+      index: true
+    },
+    gtin: {
+      type: String,
+      trim: true,
+      maxlength: [14, 'GTIN is too long'],
+      default: '',
+      sparse: true,
+      index: true
+    },
+    upc: {
+      type: String,
+      trim: true,
+      maxlength: [14, 'UPC is too long'],
+      default: ''
+    },
+    ean: {
+      type: String,
+      trim: true,
+      maxlength: [14, 'EAN is too long'],
+      default: ''
+    },
+    mpn: {
+      type: String,
+      trim: true,
+      maxlength: [80, 'MPN is too long'],
+      default: ''
+    },
+    manufacturer: {
+      type: String,
+      trim: true,
+      maxlength: [160, 'Manufacturer is too long'],
+      default: ''
     },
     isFeatured: {
       type: Boolean,

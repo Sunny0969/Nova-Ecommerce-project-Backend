@@ -103,8 +103,20 @@ function randomRating() {
   return 5;
 }
 
-async function generateFakeReviewsForProduct({ productId, productName, maxReviews = 10 }) {
-  const n = crypto.randomInt(0, Math.max(1, maxReviews) + 1); // 0..maxReviews
+async function generateFakeReviewsForProduct({
+  productId,
+  productName,
+  maxReviews = 10,
+  minReviews = 0
+}) {
+  const min = Math.max(0, Number(minReviews) || 0);
+  const max = Math.max(min, Number(maxReviews) || 0);
+  const n =
+    min > 0 && min === max
+      ? min
+      : min > 0
+        ? crypto.randomInt(min, max + 1)
+        : crypto.randomInt(0, max + 1);
   if (n === 0) {
     await recalculateProductRatings(productId);
     return { created: 0 };

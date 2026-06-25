@@ -1,0 +1,65 @@
+[
+  {
+    "slugContains": "national-jam-mango",
+    "brandName": "National",
+    "manufacturer": "National Foods Limited",
+    "gtin": "8901030865123",
+    "sku": "NAT-JAM-MANGO-440"
+  },
+  {
+    "slugContains": "palmolive",
+    "brandName": "Palmolive",
+    "manufacturer": "Colgate-Palmolive",
+    "gtin": "8850118800456",
+    "sku": "PALM-NATURAL-90G"
+  },
+  {
+    "slugContains": "figaro",
+    "brandName": "Figaro",
+    "manufacturer": "Figaro Olive Oil",
+    "gtin": "8410076412345",
+    "sku": "FIG-OLIVE-500ML"
+  },
+  {
+    "slugContains": "polac",
+    "brandName": "Polac",
+    "manufacturer": "Polac Foods",
+    "gtin": "8901030865789",
+    "sku": "POLAC-CORN-340G"
+  },
+  {
+    "slugContains": "american-garden",
+    "brandName": "American Garden",
+    "manufacturer": "American Garden Products",
+    "gtin": "8850118800789",
+    "sku": "AG-KETCHUP-567G"
+  },
+  {
+    "slugContains": "arizona-fields",
+    "brandName": "Arizona Fields",
+    "manufacturer": "Arizona Fields Foods",
+    "gtin": "8850118800991",
+    "sku": "AZ-MUSHROOM-400G"
+  },
+  {
+    "slugContains": "nofea",
+    "brandName": "Nofea",
+    "manufacturer": "Nofea Foods",
+    "gtin": "8901030865901",
+    "sku": "NOFEA-SNACK-200G"
+  },
+  {
+    "slugContains": "hilal",
+    "brandName": "Hilal",
+    "manufacturer": "Hilal Foods",
+    "gtin": "8901030866012",
+    "sku": "HILAL-CANDY-50G"
+  },
+  {
+    "slugContains": "mitchell",
+    "brandName": "Mitchell's",
+    "manufacturer": "Mitchell's Fruit Farms",
+    "gtin": "8901030866234",
+    "sku": "MIT-JAM-450G"
+  }
+]

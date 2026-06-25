@@ -142,7 +142,7 @@ function shapeProductDoc(doc) {
     slug: d.slug || ''
   });
 
-  return {
+  const shaped = {
     _id: d._id,
     productId: d.slug,
     slug: d.slug,
@@ -162,6 +162,7 @@ function shapeProductDoc(doc) {
     description: cleanedDesc.description,
     shortDescription: cleanedDesc.shortDescription,
     stockQuantity,
+    stock,
     rating: Number.isFinite(Number(d.ratings)) ? Number(d.ratings) : 0,
     ratingCount: Number.isFinite(Number(d.numReviews)) ? Number(d.numReviews) : 0,
     badge,
@@ -187,8 +188,30 @@ function shapeProductDoc(doc) {
         : undefined,
     variantAxes,
     createdAt: d.createdAt,
-    updatedAt: d.updatedAt
+    updatedAt: d.updatedAt,
+    availabilityStatus: d.availabilityStatus || '',
+    brandName: d.brandName || '',
+    gtin: d.gtin || '',
+    upc: d.upc || '',
+    ean: d.ean || '',
+    mpn: d.mpn || '',
+    manufacturer: d.manufacturer || ''
   };
+
+  const availability = resolveProductOfferAvailability(shaped);
+  shaped.availabilityStatus = availability.status;
+  shaped.isAvailable = availability.isAvailable;
+
+  const identifiers = resolveProductIdentifierPayload(shaped);
+  shaped.brandName = identifiers.brandName;
+  shaped.sku = identifiers.sku || shaped.sku;
+  shaped.gtin = identifiers.gtin || shaped.gtin;
+  shaped.upc = identifiers.upc || shaped.upc;
+  shaped.ean = identifiers.ean || shaped.ean;
+  shaped.mpn = identifiers.mpn || shaped.mpn;
+  shaped.manufacturer = identifiers.manufacturer || shaped.manufacturer;
+
+  return shaped;
 }
 
 function formatMongooseValidation(err) {
@@ -213,6 +236,9 @@ async function resolveCategoryId(input) {
 }
 
 const { recalculateProductRatings } = require('../utils/recalculateProductRatings');
+const { formatAggregateRatingResponse } = require('../lib/productSchemaJsonLd');
+const { resolveProductOfferAvailability } = require('../lib/productAvailability');
+const { resolveProductIdentifierPayload } = require('../lib/productIdentifiers');
 const { generateFakeReviewsForProduct } = require('../utils/generateFakeReviews');
 const {
   hasDeliveredPurchase,
@@ -1839,6 +1865,59 @@ router.post('/:slug/notify-stock', async (req, res) => {
   } catch (error) {
     console.error('Notify stock error:', error);
     fail(res, 500, error.message || 'Could not save notification');
+  }
+});
+
+/**
+ * GET /api/products/:slug/aggregate-rating — public aggregate for SEO widgets
+ */
+router.get('/:slug/aggregate-rating', async (req, res) => {
+  try {
+    const slug = String(req.params.slug).toLowerCase().trim();
+    const raw = await Product.findOne({ slug, isPublished: true }).select('slug ratings numReviews').lean();
+    if (!raw) {
+      return fail(res, 404, 'Product not found');
+    }
+    const reviews = await Review.find({ product: raw._id }).select('rating').lean();
+    ok(res, formatAggregateRatingResponse(raw, reviews));
+  } catch (error) {
+    console.error('Aggregate rating error:', error);
+    fail(res, 500, error.message || 'Failed to load aggregate rating');
+  }
+});
+
+/**
+ * GET /api/products/:slug/reviews — public list for SEO / schema (max 5)
+ */
+router.get('/:slug/reviews', async (req, res) => {
+  try {
+    const slug = String(req.params.slug).toLowerCase().trim();
+    const limit = Math.min(5, Math.max(1, Number(req.query.limit) || 5));
+    const raw = await Product.findOne({ slug, isPublished: true }).select('_id slug').lean();
+    if (!raw) {
+      return fail(res, 404, 'Product not found');
+    }
+
+    const rows = await Review.find({ product: raw._id })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate('user', 'name')
+      .lean();
+
+    const reviews = rows.map((row) => ({
+      id: row._id,
+      rating: row.rating,
+      comment: row.comment || '',
+      reviewText: row.comment || '',
+      authorName: row.user?.name || 'Customer',
+      name: row.user?.name || 'Customer',
+      createdAt: row.createdAt
+    }));
+
+    ok(res, reviews);
+  } catch (error) {
+    console.error('List product reviews error:', error);
+    fail(res, 500, error.message || 'Failed to load reviews');
   }
 });
 
