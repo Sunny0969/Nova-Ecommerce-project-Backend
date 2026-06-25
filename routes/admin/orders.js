@@ -7,6 +7,7 @@ const {
   buildAdminOrderReviewDetails
 } = require('../../lib/reviewHelpers');
 const { sendOrderStatusUpdateEmail, customerEmail, customerDisplayName } = require('../../lib/email');
+const { notifyOrderStatus } = require('../../services/pushNotificationService');
 const { ORDER_POPULATE } = require('../../services/orderFromPaymentIntent');
 const { creditCashbackForOrder } = require('../../services/walletService');
 const {
@@ -74,6 +75,20 @@ async function notifyCustomerStatusChange(order, previousStatus) {
 
   try {
     const result = await sendOrderStatusUpdateEmail(recipient, orderForEmail, previousStatus);
+    if (order.user) {
+      setImmediate(async () => {
+        try {
+          await notifyOrderStatus(
+            order.user,
+            order._id,
+            order.status,
+            orderForEmail?.orderNumber || String(order._id).slice(-8).toUpperCase()
+          );
+        } catch (pushErr) {
+          console.warn('[push] order status:', pushErr.message);
+        }
+      });
+    }
     return {
       ...result,
       sent: Boolean(result?.sent),

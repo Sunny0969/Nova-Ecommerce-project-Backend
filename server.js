@@ -12,11 +12,22 @@ if (hfBlog.configured) {
       'Add it to Railway Variables (backend service) or backend/.env for localhost.'
   );
 }
+const { configureWebPush, isPushConfigured } = require('./lib/pushVapid');
 const {
   configureMongoDns,
   MONGOOSE_CONNECT_OPTS
 } = require('./lib/configureMongoDns');
 configureMongoDns();
+
+if (isPushConfigured()) {
+  configureWebPush();
+  console.log('[push] Web Push VAPID configured');
+} else {
+  console.warn(
+    '[push] VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set — push notifications disabled. ' +
+      'Run: node scripts/generate-vapid-keys.js'
+  );
+}
 
 const path = require('path');
 const fs = require('fs');
@@ -184,6 +195,7 @@ app.use('/api/internal/cache', require('./routes/internal/cache'));
 ============================ */
 app.use('/api/cart', requireJwtAuth, require('./routes/cart'));
 app.use('/api/wishlist', requireJwtAuth, require('./routes/wishlist'));
+app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/wallet', requireJwtAuth, require('./routes/wallet'));
 app.use('/api/orders/guest', require('./routes/guestOrders'));
 app.use('/api/orders', requireJwtAuth, require('./routes/orders'));
@@ -248,6 +260,13 @@ app.use(
   requireJwtAuth,
   requireAdmin,
   require('./routes/admin/fraud')
+);
+
+app.use(
+  '/api/admin/notifications',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/notifications')
 );
 
 app.use(

@@ -27,6 +27,7 @@ const {
 } = require('../lib/variantStock');
 const { productNameQueryForBrand } = require('../lib/brandFilters');
 const { queueProductEmbeddingUpdate, hybridSearch, suggestQueries } = require('../services/aiSearch');
+const { notifyPriceChange, notifyNewProduct, buildProductPath } = require('../services/pushNotificationService');
 const { logSearchQuery, logSearchClick, getTrendingSearches } = require('../services/searchAnalytics');
 const { saleProductMatchFilter } = require('../lib/productSale');
 const { sanitizeProductDoc } = require('../lib/productDescription');
@@ -1074,6 +1075,21 @@ router.post(
       } catch (e) {
         console.warn('[aiSearch] queueProductEmbeddingUpdate(create):', e.message);
       }
+
+      if (doc.isPublished && doc.approvalStatus === 'approved') {
+        setImmediate(async () => {
+          try {
+            const catSlug =
+              populated?.category && typeof populated.category === 'object'
+                ? populated.category.slug
+                : '';
+            const productPath = buildProductPath(doc.slug, catSlug);
+            await notifyNewProduct(doc._id, doc.category, doc.name, productPath);
+          } catch (pushErr) {
+            console.warn('[push] new product:', pushErr.message);
+          }
+        });
+      }
     } catch (error) {
       if (error.code === 11000) {
         return fail(res, 409, 'A product with this slug already exists');
@@ -1202,6 +1218,7 @@ router.put(
       return fail(res, 404, 'Product not found');
     }
 
+      const oldPrice = Number(product.price);
       const oldImages = JSON.parse(JSON.stringify(product.images || []));
 
       let parsed = null;
@@ -1488,6 +1505,22 @@ router.put(
       } catch (e) {
         console.warn('[aiSearch] queueProductEmbeddingUpdate(update):', e.message);
       }
+
+      setImmediate(async () => {
+        try {
+          const newPrice = Number(updated.price);
+          const catSlug =
+            typeof updated.category === 'object' && updated.category?.slug
+              ? updated.category.slug
+              : '';
+          const productPath = buildProductPath(updated.slug, catSlug);
+          if (Number.isFinite(newPrice) && Number.isFinite(oldPrice) && newPrice < oldPrice) {
+            await notifyPriceChange(product._id, updated.name, oldPrice, newPrice, productPath);
+          }
+        } catch (pushErr) {
+          console.warn('[push] price change:', pushErr.message);
+        }
+      });
   } catch (error) {
       if (error.code === 11000) {
         return fail(res, 409, 'A product with this slug already exists');
