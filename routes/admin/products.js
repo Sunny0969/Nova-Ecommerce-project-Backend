@@ -56,6 +56,9 @@ function isValidObjectId(id) {
   return mongoose.Types.ObjectId.isValid(id);
 }
 
+/** Static paths — must never match GET /:id */
+const RESERVED_PRODUCT_PATHS = new Set(['export', 'ids', 'bulk', 'pending']);
+
 
 /** True only for 24-char hex strings — avoids mongoose.isValidObjectId false positives. */
 function strictMongoId(v) {
@@ -134,6 +137,17 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Normalize ?categories= or ?category= from string, comma-list, or repeated query keys. */
+function readCategoryKeysFromQuery(query) {
+  const raw = query?.categories ?? query?.category;
+  if (raw == null) return [];
+  const parts = Array.isArray(raw) ? raw : [raw];
+  return parts
+    .flatMap((v) => String(v).split(','))
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /** Shared list filters for GET /, GET /ids, and bulk adjust by filter. */
 async function buildAdminListFilterFromQuery(query) {
   const and = [];
@@ -151,8 +165,21 @@ async function buildAdminListFilterFromQuery(query) {
   if (status === 'published') and.push({ isPublished: true });
   else if (status === 'draft' || status === 'unpublished') and.push({ isPublished: false });
 
-  const categoryFilter = await buildProductCategoryFilter(query?.category);
-  if (categoryFilter) and.push(categoryFilter);
+  const categoryKeys = readCategoryKeysFromQuery(query);
+
+  if (categoryKeys.length) {
+    const categoryFilters = (
+      await Promise.all(categoryKeys.map((key) => buildProductCategoryFilter(key)))
+    ).filter(Boolean);
+
+    if (categoryFilters.length === 1) {
+      and.push(categoryFilters[0]);
+    } else if (categoryFilters.length > 1) {
+      and.push({ $or: categoryFilters });
+    } else {
+      and.push({ _id: { $in: [] } });
+    }
+  }
 
   return and.length ? { $and: and } : {};
 }
@@ -213,6 +240,103 @@ router.get('/pending', requireMountedAdmin, async (req, res) => {
   } catch (e) {
     console.error('Admin pending products:', e);
     return res.status(500).json({ success: false, message: e.message || 'Failed to load pending products' });
+  }
+});
+
+/**
+ * GET /api/admin/products/export — full catalog rows for PDF export
+ * Register before /:id (otherwise "export" is treated as a product id).
+ */
+router.get('/export', async (req, res) => {
+  try {
+    let filter;
+    const idsRaw = String(req.query?.ids || '').trim();
+    if (idsRaw) {
+      const ids = idsRaw
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => isValidObjectId(id));
+      if (!ids.length) {
+        return fail(res, 400, 'No valid product ids provided');
+      }
+      filter = { _id: { $in: ids } };
+    } else {
+      filter = await buildAdminListFilterFromQuery(req.query);
+    }
+
+    const rows = await Product.find(filter)
+      .select('name stock price comparePrice costPrice category')
+      .sort({ name: 1, _id: 1 })
+      .lean();
+
+    const withCats = await attachCategoriesToProducts(rows);
+
+    const categoryOrderKeys = readCategoryKeysFromQuery(req.query);
+
+    const categoryRank = new Map(categoryOrderKeys.map((id, idx) => [id, idx]));
+
+    withCats.sort((a, b) => {
+      const aId = a.category?._id ? String(a.category._id) : '';
+      const bId = b.category?._id ? String(b.category._id) : '';
+      const aRank = categoryRank.has(aId) ? categoryRank.get(aId) : 9999;
+      const bRank = categoryRank.has(bId) ? categoryRank.get(bId) : 9999;
+      if (aRank !== bRank) return aRank - bRank;
+      const aName = a.category?.name || '';
+      const bName = b.category?.name || '';
+      if (aName !== bName) return aName.localeCompare(bName);
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    });
+
+    const products = withCats.map((d) => {
+      const stock = Number(d.stock);
+      const sellingRate = Number(d.price) || 0;
+      const comparePrice = Number(d.comparePrice);
+      const costPrice = Number(d.costPrice);
+      let actualRate = sellingRate;
+      if (Number.isFinite(comparePrice) && comparePrice > 0) actualRate = comparePrice;
+      else if (Number.isFinite(costPrice) && costPrice > 0) actualRate = costPrice;
+
+      const cat = d.category;
+      const categoryId =
+        cat && typeof cat === 'object' && cat._id != null ? String(cat._id) : '';
+      const categoryName =
+        cat && typeof cat === 'object' && cat.name ? String(cat.name) : 'Uncategorized';
+
+      return {
+        name: String(d.name || '').trim(),
+        quantity: Number.isFinite(stock) ? Math.max(0, Math.floor(stock)) : 0,
+        actualRate,
+        sellingRate,
+        categoryId,
+        categoryName
+      };
+    });
+
+    ok(res, {
+      products,
+      totalCount: products.length,
+      generatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Admin export products error:', error);
+    fail(res, 500, error.message || 'Failed to export products');
+  }
+});
+
+/**
+ * GET /api/admin/products/ids — all product ids matching list filters
+ */
+router.get('/ids', requireMountedAdmin, async (req, res) => {
+  try {
+    const filter = await buildAdminListFilterFromQuery(req.query);
+    const rows = await Product.find(filter).select('_id').lean();
+    ok(res, {
+      ids: rows.map((p) => String(p._id)),
+      totalCount: rows.length
+    });
+  } catch (error) {
+    console.error('Admin product ids error:', error);
+    fail(res, 500, error.message || 'Failed to fetch product ids');
   }
 });
 
@@ -395,28 +519,14 @@ router.get('/', async (req, res) => {
 });
 
 /**
- * GET /api/admin/products/ids — all product ids matching list filters (for select-all + bulk adjust)
- */
-router.get('/ids', requireMountedAdmin, async (req, res) => {
-  try {
-    const filter = await buildAdminListFilterFromQuery(req.query);
-    const rows = await Product.find(filter).select('_id').lean();
-    ok(res, {
-      ids: rows.map((p) => String(p._id)),
-      totalCount: rows.length
-    });
-  } catch (error) {
-    console.error('Admin product ids error:', error);
-    fail(res, 500, error.message || 'Failed to fetch product ids');
-  }
-});
-
-/**
  * GET /api/admin/products/:id — full product for edit form (Mongo _id, includes drafts)
  */
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    if (RESERVED_PRODUCT_PATHS.has(String(id).toLowerCase())) {
+      return fail(res, 404, 'Route not found');
+    }
     if (!isValidObjectId(id)) {
       return fail(res, 400, 'Invalid product id');
     }
