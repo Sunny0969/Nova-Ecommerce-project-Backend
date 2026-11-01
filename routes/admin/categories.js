@@ -3,6 +3,7 @@
  */
 
 const express = require('express');
+const mongoose = require('mongoose');
 const Category = require('../../models/Category');
 const Product = require('../../models/Product');
 
@@ -13,12 +14,22 @@ function ok(res, data, status = 200) {
 }
 
 /**
- * All categories with product counts (admin only).
+ * All categories with product counts.
+ * If requested by staff, scopes only to categories created by this staff member.
  */
 router.get('/', async (req, res) => {
   try {
     const productColl = Product.collection.name;
+    const match = {};
+    if (!req.adminUser && req.staff) {
+      const staffScope = req.staff.permissions?.orderScope || 'all';
+      if (staffScope === 'own_products') {
+        match.createdByStaff = new mongoose.Types.ObjectId(req.staff.id);
+      }
+    }
+
     const rows = await Category.aggregate([
+      ...(Object.keys(match).length ? [{ $match: match }] : []),
       { $sort: { displayOrder: 1, name: 1 } },
       {
         $lookup: {

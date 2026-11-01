@@ -526,4 +526,71 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/orders/:id/reorder — 1-Click reorder items from a previous order into the current cart
+ */
+router.post('/:id/reorder', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return fail(res, 400, 'Invalid order id');
+    }
+
+    const order = await Order.findById(id).lean();
+    if (!order) {
+      return fail(res, 404, 'Order not found');
+    }
+
+    if (String(order.user) !== String(req.authUserId)) {
+      return fail(res, 403, 'Not authorized to reorder this order');
+    }
+
+    const Cart = require('../models/Cart');
+    let cart = await Cart.findOne({ user: req.authUserId });
+    if (!cart) {
+      cart = new Cart({ user: req.authUserId, items: [] });
+    }
+
+    const orderItems = order.orderItems || [];
+    const addedItems = [];
+    const outOfStockItems = [];
+
+    for (const item of orderItems) {
+      const prodId = item.product?._id || item.product;
+      const product = await Product.findById(prodId);
+      if (!product || !product.isPublished || (Number(product.stock) || 0) <= 0) {
+        outOfStockItems.push(item.name || 'Unknown item');
+        continue;
+      }
+
+      const availableQty = Math.min(Number(product.stock), Number(item.quantity) || 1);
+      const existingIdx = cart.items.findIndex((ci) => String(ci.product) === String(product._id));
+      if (existingIdx > -1) {
+        cart.items[existingIdx].quantity = Math.min(Number(product.stock), cart.items[existingIdx].quantity + availableQty);
+      } else {
+        cart.items.push({
+          product: product._id,
+          quantity: availableQty,
+          price: product.price
+        });
+      }
+      addedItems.push(product.name);
+    }
+
+    await cart.save();
+
+    return ok(res, 200, {
+      message: addedItems.length ? 'Items added to cart for 1-Click Reorder!' : 'Items currently out of stock',
+      data: {
+        addedCount: addedItems.length,
+        outOfStockCount: outOfStockItems.length,
+        outOfStockItems
+      }
+    });
+  } catch (err) {
+    console.error('Reorder error:', err);
+    return fail(res, 500, err.message || 'Failed to process reorder');
+  }
+});
+
 module.exports = router;

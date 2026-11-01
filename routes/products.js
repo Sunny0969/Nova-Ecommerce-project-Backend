@@ -45,6 +45,7 @@ const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
 const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
 const { activeCategoryProductFilter } = require('../lib/activeCategories');
 const ProductSubcategory = require('../models/ProductSubcategory');
+const { recordAuditLog } = require('../lib/auditLogger');
 const {
   normalizeGender,
   resolveShopSubcategoryId,
@@ -1152,6 +1153,7 @@ router.patch('/:id/stock', requireAdmin, async (req, res) => {
       });
     }
 
+    const prevStock = product.stock;
     product.stock = Math.floor(n);
     // Staff updates always require re-approval.
     if (req.staff) {
@@ -1164,6 +1166,16 @@ router.patch('/:id/stock', requireAdmin, async (req, res) => {
     }
 
     await product.save();
+
+    recordAuditLog({
+      req,
+      action: 'UPDATE_PRODUCT_STOCK',
+      targetType: 'product',
+      targetId: product._id,
+      targetTitle: product.name,
+      description: `Updated stock from ${prevStock} to ${product.stock}`,
+      changes: { prevStock, newStock: product.stock }
+    });
 
     const updated = await Product.findById(product._id)
       .populate('category', 'name slug')

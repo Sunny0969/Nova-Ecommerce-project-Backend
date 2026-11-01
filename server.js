@@ -270,6 +270,13 @@ app.use(
 );
 
 app.use(
+  '/api/admin/audit-logs',
+  requireJwtAuth,
+  requireAdmin,
+  require('./routes/admin/auditLogs')
+);
+
+app.use(
   '/api/admin/blog/ai',
   requireJwtAuth,
   requireAdmin,

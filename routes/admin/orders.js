@@ -2,6 +2,9 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Order = require('../../models/Order');
 const User = require('../../models/User');
+const Product = require('../../models/Product');
+const Category = require('../../models/Category');
+const { recordAuditLog } = require('../../lib/auditLogger');
 const {
   buildReviewSummariesForOrders,
   buildAdminOrderReviewDetails
@@ -51,6 +54,35 @@ function parseDateEnd(d) {
   const end = new Date(x);
   end.setUTCHours(23, 59, 59, 999);
   return end;
+}
+
+/**
+ * Check if the current requester is staff with 'own_products' order scope.
+ * If yes, returns an array of Product IDs that belong to this staff (or their categories).
+ * If admin or staff with 'all' scope, returns null (meaning no scoping restriction).
+ */
+async function getStaffScopedProductIds(req) {
+  if (req.adminUser) return null;
+  if (!req.staff) return null;
+
+  const scope = req.staff.permissions?.orderScope || 'all';
+  if (scope !== 'own_products') return null;
+
+  const staffId = req.staff.id;
+  // Find categories created by this staff
+  const staffCategories = await Category.find({ createdByStaff: staffId }).select('_id').lean();
+  const categoryIds = staffCategories.map((c) => c._id);
+
+  // Find products submitted by staff OR in staff's categories
+  const query = {
+    $or: [
+      { submittedByStaff: staffId },
+      ...(categoryIds.length ? [{ category: { $in: categoryIds } }] : [])
+    ]
+  };
+
+  const products = await Product.find(query).select('_id').lean();
+  return products.map((p) => p._id);
 }
 
 async function notifyCustomerStatusChange(order, previousStatus) {
@@ -107,7 +139,14 @@ async function notifyCustomerStatusChange(order, previousStatus) {
  */
 router.get('/stats', async (req, res) => {
   try {
+    const scopedProductIds = await getStaffScopedProductIds(req);
+    const match = {};
+    if (scopedProductIds) {
+      match['orderItems.product'] = { $in: scopedProductIds };
+    }
+
     const rows = await Order.aggregate([
+      ...(Object.keys(match).length ? [{ $match: match }] : []),
       { $group: { _id: '$status', count: { $sum: 1 } } }
     ]);
     const byStatus = Object.fromEntries(ORDER_STATUSES.map((s) => [s, 0]));
@@ -204,6 +243,11 @@ router.get('/', async (req, res) => {
       clauses.push({ $or: or });
     }
 
+    const scopedProductIds = await getStaffScopedProductIds(req);
+    if (scopedProductIds) {
+      clauses.push({ 'orderItems.product': { $in: scopedProductIds } });
+    }
+
     const filter = clauses.length === 0 ? {} : clauses.length === 1 ? clauses[0] : { $and: clauses };
 
     const [orders, totalCount] = await Promise.all([
@@ -289,6 +333,17 @@ router.get('/:id', async (req, res) => {
       return fail(res, 404, 'Order not found');
     }
 
+    const scopedProductIds = await getStaffScopedProductIds(req);
+    if (scopedProductIds) {
+      const allowedSet = new Set(scopedProductIds.map((p) => String(p)));
+      const hasAllowedItem = (order.orderItems || []).some((item) =>
+        allowedSet.has(String(item.product?._id || item.product))
+      );
+      if (!hasAllowedItem) {
+        return fail(res, 403, 'You do not have permission to view this order');
+      }
+    }
+
     hydratePaymentProof(order);
     try {
       await persistHydratedPaymentProof(order);
@@ -330,6 +385,17 @@ router.put('/:id/status', async (req, res) => {
       return fail(res, 404, 'Order not found');
     }
 
+    const scopedProductIds = await getStaffScopedProductIds(req);
+    if (scopedProductIds) {
+      const allowedSet = new Set(scopedProductIds.map((p) => String(p)));
+      const hasAllowedItem = (order.orderItems || []).some((item) =>
+        allowedSet.has(String(item.product?._id || item.product))
+      );
+      if (!hasAllowedItem) {
+        return fail(res, 403, 'You do not have permission to modify this order');
+      }
+    }
+
     const previousStatus = order.status;
     if (previousStatus === nextStatus) {
       const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
@@ -357,6 +423,16 @@ router.put('/:id/status', async (req, res) => {
     }
 
     const emailResult = await notifyCustomerStatusChange(order, previousStatus);
+
+    recordAuditLog({
+      req,
+      action: 'UPDATE_ORDER_STATUS',
+      targetType: 'order',
+      targetId: order._id,
+      targetTitle: `Order #${order.orderNumber || String(order._id).slice(-8).toUpperCase()}`,
+      description: `Changed status from "${previousStatus}" to "${nextStatus}"`,
+      changes: { previousStatus, nextStatus }
+    });
 
     const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
     const emailNotified = Boolean(emailResult?.sent);
@@ -408,6 +484,17 @@ router.put('/:id/payment-proof', async (req, res) => {
       return fail(res, 404, 'Order not found');
     }
 
+    const scopedProductIds = await getStaffScopedProductIds(req);
+    if (scopedProductIds) {
+      const allowedSet = new Set(scopedProductIds.map((p) => String(p)));
+      const hasAllowedItem = (order.orderItems || []).some((item) =>
+        allowedSet.has(String(item.product?._id || item.product))
+      );
+      if (!hasAllowedItem) {
+        return fail(res, 403, 'You do not have permission to modify this order');
+      }
+    }
+
     const txnId =
       req.body.transactionId != null ? String(req.body.transactionId).trim().slice(0, 120) : '';
 
@@ -455,6 +542,17 @@ router.put('/:id/paid', async (req, res) => {
       return fail(res, 404, 'Order not found');
     }
 
+    const scopedProductIds = await getStaffScopedProductIds(req);
+    if (scopedProductIds) {
+      const allowedSet = new Set(scopedProductIds.map((p) => String(p)));
+      const hasAllowedItem = (order.orderItems || []).some((item) =>
+        allowedSet.has(String(item.product?._id || item.product))
+      );
+      if (!hasAllowedItem) {
+        return fail(res, 403, 'You do not have permission to modify this order');
+      }
+    }
+
     const previousStatus = order.status;
     const paid = req.body.isPaid !== false;
     order.isPaid = paid;
@@ -466,6 +564,16 @@ router.put('/:id/paid', async (req, res) => {
     await order.save();
 
     const emailResult = await notifyCustomerStatusChange(order, previousStatus);
+
+    recordAuditLog({
+      req,
+      action: 'UPDATE_ORDER_STATUS',
+      targetType: 'order',
+      targetId: order._id,
+      targetTitle: `Order #${order.orderNumber || String(order._id).slice(-8).toUpperCase()}`,
+      description: `Changed status from "${previousStatus}" to "${nextStatus}"`,
+      changes: { previousStatus, nextStatus }
+    });
 
     const populated = await Order.findById(order._id).populate(ORDER_POPULATE);
     const emailNotified = Boolean(emailResult?.sent);
@@ -513,6 +621,17 @@ router.put('/:id/tracking', async (req, res) => {
     const order = await Order.findById(id);
     if (!order) {
       return fail(res, 404, 'Order not found');
+    }
+
+    const scopedProductIds = await getStaffScopedProductIds(req);
+    if (scopedProductIds) {
+      const allowedSet = new Set(scopedProductIds.map((p) => String(p)));
+      const hasAllowedItem = (order.orderItems || []).some((item) =>
+        allowedSet.has(String(item.product?._id || item.product))
+      );
+      if (!hasAllowedItem) {
+        return fail(res, 403, 'You do not have permission to modify this order');
+      }
     }
 
     const previousStatus = order.status;

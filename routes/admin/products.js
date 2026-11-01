@@ -495,6 +495,27 @@ router.get('/', async (req, res) => {
     });
 
     const filter = await buildAdminListFilterFromQuery(req.query);
+
+    // If requester is staff with 'own_products' order/product scope, filter only products submitted by them
+    if (!req.adminUser && req.staff) {
+      const scope = req.staff.permissions?.orderScope || 'all';
+      if (scope === 'own_products') {
+        const staffScopeClause = { submittedByStaff: new mongoose.Types.ObjectId(req.staff.id) };
+        if (filter.$and) {
+          filter.$and.push(staffScopeClause);
+        } else if (Object.keys(filter).length) {
+          const old = { ...filter };
+          delete filter.isPublished;
+          delete filter.name;
+          delete filter.slug;
+          delete filter.$or;
+          filter.$and = [old, staffScopeClause];
+        } else {
+          Object.assign(filter, staffScopeClause);
+        }
+      }
+    }
+
     const adminSelect = `${ADMIN_LIST_SELECT} lowStockThreshold submittedByStaff`;
 
     const { rows: rawRows, totalCount } = await adminListProductsUncasted(filter, {

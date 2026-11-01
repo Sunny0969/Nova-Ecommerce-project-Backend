@@ -91,8 +91,10 @@ router.post('/create', async (req, res) => {
         manageProducts:   !!permissions.manageProducts,
         manageCategories: !!permissions.manageCategories,
         manageOrders:     !!permissions.manageOrders,
+        orderScope:       permissions.orderScope === 'own_products' ? 'own_products' : 'all',
         manageBlog:       !!permissions.manageBlog,
         manageCustomers:  !!permissions.manageCustomers,
+        customerScope:    permissions.customerScope === 'own_orders' ? 'own_orders' : 'all',
         viewAnalytics:    !!permissions.viewAnalytics,
         manageCoupons:    !!permissions.manageCoupons
       }
@@ -150,8 +152,10 @@ router.put('/:id/permissions', async (req, res) => {
           'permissions.manageProducts':   !!permissions.manageProducts,
           'permissions.manageCategories': !!permissions.manageCategories,
           'permissions.manageOrders':     !!permissions.manageOrders,
+          'permissions.orderScope':       permissions.orderScope === 'own_products' ? 'own_products' : 'all',
           'permissions.manageBlog':       !!permissions.manageBlog,
           'permissions.manageCustomers':  !!permissions.manageCustomers,
+          'permissions.customerScope':    permissions.customerScope === 'own_orders' ? 'own_orders' : 'all',
           'permissions.viewAnalytics':    !!permissions.viewAnalytics,
           'permissions.manageCoupons':    !!permissions.manageCoupons
         }

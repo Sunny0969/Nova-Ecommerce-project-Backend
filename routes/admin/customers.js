@@ -6,6 +6,8 @@ const express = require('express');
 const mongoose = require('mongoose');
 const User = require('../../models/User');
 const Order = require('../../models/Order');
+const Product = require('../../models/Product');
+const Category = require('../../models/Category');
 const Cart = require('../../models/Cart');
 const Wishlist = require('../../models/Wishlist');
 const Review = require('../../models/Review');
@@ -48,6 +50,33 @@ router.get('/', async (req, res) => {
         { name: { $regex: escapeRegex(q), $options: 'i' } },
         { email: { $regex: escapeRegex(q), $options: 'i' } }
       ];
+    }
+
+    // If staff with customerScope === 'own_orders' (or fallback to orderScope === 'own_products')
+    if (!req.adminUser && req.staff) {
+      const custScope = req.staff.permissions?.customerScope;
+      const orderScope = req.staff.permissions?.orderScope || 'all';
+      const isRestricted = custScope === 'own_orders' || (!custScope && orderScope === 'own_products');
+
+      if (isRestricted) {
+        const staffId = req.staff.id;
+        const staffCategories = await Category.find({ createdByStaff: staffId }).select('_id').lean();
+        const categoryIds = staffCategories.map((c) => c._id);
+        const scopedProducts = await Product.find({
+          $or: [
+            { submittedByStaff: staffId },
+            ...(categoryIds.length ? [{ category: { $in: categoryIds } }] : [])
+          ]
+        }).select('_id').lean();
+        const productIds = scopedProducts.map((p) => p._id);
+
+        const ordersWithProducts = await Order.find({
+          'orderItems.product': { $in: productIds },
+          user: { $ne: null }
+        }).distinct('user');
+
+        filter._id = { $in: ordersWithProducts };
+      }
     }
 
     const [customers, totalCount] = await Promise.all([

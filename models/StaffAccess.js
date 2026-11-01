@@ -7,8 +7,18 @@ const permissionsSchema = new mongoose.Schema(
     manageProducts: { type: Boolean, default: false },
     manageCategories: { type: Boolean, default: false },
     manageOrders: { type: Boolean, default: false },
+    orderScope: {
+      type: String,
+      enum: ['all', 'own_products'],
+      default: 'all'
+    },
     manageBlog: { type: Boolean, default: false },
     manageCustomers: { type: Boolean, default: false },
+    customerScope: {
+      type: String,
+      enum: ['all', 'own_orders'],
+      default: 'all'
+    },
     viewAnalytics: { type: Boolean, default: false },
     manageCoupons: { type: Boolean, default: false }
   },

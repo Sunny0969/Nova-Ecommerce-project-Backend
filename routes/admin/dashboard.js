@@ -3,8 +3,10 @@
  */
 
 const express = require('express');
+const mongoose = require('mongoose');
 const Order = require('../../models/Order');
 const Product = require('../../models/Product');
+const Category = require('../../models/Category');
 const User = require('../../models/User');
 const { ORDER_POPULATE } = require('../../services/orderFromPaymentIntent');
 
@@ -95,10 +97,42 @@ function fillMonthlyRevenuePoints(monthKeys, revenueByMonth) {
 }
 
 /**
+ * Helper to get product IDs scoped to staff if orderScope is 'own_products'
+ */
+async function getStaffScopedProductsForDashboard(req) {
+  if (req.adminUser) return null;
+  if (!req.staff) return null;
+  const scope = req.staff.permissions?.orderScope || 'all';
+  if (scope !== 'own_products') return null;
+
+  const staffId = req.staff.id;
+  const staffCats = await Category.find({ createdByStaff: staffId }).select('_id').lean();
+  const catIds = staffCats.map((c) => c._id);
+
+  const products = await Product.find({
+    $or: [
+      { submittedByStaff: staffId },
+      ...(catIds.length ? [{ category: { $in: catIds } }] : [])
+    ]
+  }).select('_id name price stock').lean();
+
+  return products;
+}
+
+/**
  * GET /api/admin/dashboard/stats
  */
 router.get('/stats', async (req, res) => {
   try {
+    const scopedProducts = await getStaffScopedProductsForDashboard(req);
+    const isStaffScoped = Boolean(scopedProducts);
+    const scopedProductIds = isStaffScoped ? scopedProducts.map((p) => p._id) : null;
+
+    const orderFilterScoped = (base = {}) => {
+      if (!scopedProductIds) return base;
+      return { ...base, 'orderItems.product': { $in: scopedProductIds } };
+    };
+
     const now = new Date();
     const { startThis, endThis, prevStart, prevEnd } = mtdAlignedRanges(now);
 
@@ -135,7 +169,7 @@ router.get('/stats', async (req, res) => {
       lowStockList
     ] = await Promise.all([
       Order.aggregate([
-        { $match: { status: 'delivered' } },
+        { $match: orderFilterScoped({ status: 'delivered' }) },
         {
           $addFields: { _revDate: deliveredRevenueDateExpr() }
         },
@@ -144,31 +178,53 @@ router.get('/stats', async (req, res) => {
             _revDate: { $gte: startThis, $lte: endThis }
           }
         },
-        { $group: { _id: null, total: { $sum: '$totalPrice' } } }
+        ...(isStaffScoped
+          ? [
+              { $unwind: '$orderItems' },
+              { $match: { 'orderItems.product': { $in: scopedProductIds } } },
+              { $group: { _id: null, total: { $sum: { $multiply: ['$orderItems.price', '$orderItems.quantity'] } } } }
+            ]
+          : [{ $group: { _id: null, total: { $sum: '$totalPrice' } } }])
       ]),
       Order.aggregate([
-        { $match: { status: 'delivered' } },
+        { $match: orderFilterScoped({ status: 'delivered' }) },
         { $addFields: { _revDate: deliveredRevenueDateExpr() } },
         {
           $match: {
             _revDate: { $gte: prevStart, $lte: prevEnd }
           }
         },
-        { $group: { _id: null, total: { $sum: '$totalPrice' } } }
+        ...(isStaffScoped
+          ? [
+              { $unwind: '$orderItems' },
+              { $match: { 'orderItems.product': { $in: scopedProductIds } } },
+              { $group: { _id: null, total: { $sum: { $multiply: ['$orderItems.price', '$orderItems.quantity'] } } } }
+            ]
+          : [{ $group: { _id: null, total: { $sum: '$totalPrice' } } }])
       ]),
-      Order.countDocuments({ createdAt: { $gte: todayStart, $lte: todayEnd } }),
-      Order.countDocuments({ createdAt: { $gte: yestStart, $lte: yestEnd } }),
-      Order.countDocuments({}),
-      Order.countDocuments({ createdAt: { $lte: endLastMonth } }),
-      Order.countDocuments({
-        createdAt: { $gte: startThis, $lte: endThis }
-      }),
-      Order.countDocuments({
-        createdAt: { $gte: prevStart, $lte: prevEnd }
-      }),
-      Product.countDocuments({}),
-      Product.countDocuments({ createdAt: { $lte: endLastMonth } }),
-      Product.countDocuments({ stock: { $lt: 10 } }),
+      Order.countDocuments(orderFilterScoped({ createdAt: { $gte: todayStart, $lte: todayEnd } })),
+      Order.countDocuments(orderFilterScoped({ createdAt: { $gte: yestStart, $lte: yestEnd } })),
+      Order.countDocuments(orderFilterScoped({})),
+      Order.countDocuments(orderFilterScoped({ createdAt: { $lte: endLastMonth } })),
+      Order.countDocuments(
+        orderFilterScoped({
+          createdAt: { $gte: startThis, $lte: endThis }
+        })
+      ),
+      Order.countDocuments(
+        orderFilterScoped({
+          createdAt: { $gte: prevStart, $lte: prevEnd }
+        })
+      ),
+      isStaffScoped
+        ? Promise.resolve(scopedProducts.length)
+        : Product.countDocuments({}),
+      isStaffScoped
+        ? Promise.resolve(scopedProducts.length)
+        : Product.countDocuments({ createdAt: { $lte: endLastMonth } }),
+      isStaffScoped
+        ? Promise.resolve(scopedProducts.filter((p) => (Number(p.stock) || 0) < 10).length)
+        : Product.countDocuments({ stock: { $lt: 10 } }),
       User.countDocuments({ role: 'customer' }),
       User.countDocuments({
         role: 'customer',
@@ -182,7 +238,7 @@ router.get('/stats', async (req, res) => {
         role: 'customer',
         createdAt: { $gte: prevStart, $lte: prevEnd }
       }),
-      Order.find()
+      Order.find(orderFilterScoped({}))
         .sort({ createdAt: -1 })
         .limit(5)
         .populate(ORDER_POPULATE)

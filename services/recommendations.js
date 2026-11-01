@@ -248,6 +248,7 @@ async function similarProducts({ productId, limit = 10 }) {
 
 /**
  * Frequently bought together: co-occurrence with a given product in paid orders.
+ * Fallback to intelligent category/tag matching if co-occurrence history is low.
  */
 async function frequentlyBoughtTogether({ productId, limit = 10 }) {
   const pid = String(productId);
@@ -270,10 +271,40 @@ async function frequentlyBoughtTogether({ productId, limit = 10 }) {
       counts.set(x, (counts.get(x) || 0) + 1);
     }
   }
-  return [...counts.entries()]
+
+  let results = [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, clamp(limit, 1, 30))
     .map(([id]) => id);
+
+  // If order history has fewer than 2 items, intelligently pair with related products in same/complementary categories
+  if (results.length < 2) {
+    const baseProd = await Product.findById(pid).select('category tags shopGender').lean();
+    if (baseProd) {
+      const matchCriteria = {
+        _id: { $ne: new mongoose.Types.ObjectId(pid), $nin: results.map((r) => new mongoose.Types.ObjectId(r)) },
+        isPublished: true,
+        stock: { $gt: 0 }
+      };
+
+      if (baseProd.category) {
+        matchCriteria.category = baseProd.category;
+      }
+      if (baseProd.shopGender) {
+        matchCriteria.shopGender = baseProd.shopGender;
+      }
+
+      const fallbacks = await Product.find(matchCriteria)
+        .sort({ isFeatured: -1, ratings: -1, createdAt: -1 })
+        .limit(clamp(limit - results.length, 2, 4))
+        .select('_id')
+        .lean();
+
+      results = [...results, ...fallbacks.map((f) => String(f._id))];
+    }
+  }
+
+  return results;
 }
 
 async function recentlyViewed({ userId, sessionId, limit = 12 }) {
