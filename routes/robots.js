@@ -7,6 +7,20 @@ const DEFAULT_ROBOTS = `User-agent: *
 Allow: /
 Allow: /llms.txt
 
+# AI Search Engine and Crawler Allowances (GEO)
+User-agent: GPTBot
+Allow: /
+User-agent: ChatGPT-User
+Allow: /
+User-agent: PerplexityBot
+Allow: /
+User-agent: Google-Extended
+Allow: /
+User-agent: ClaudeBot
+Allow: /
+User-agent: CCBot
+Allow: /
+
 Disallow: /admin
 Disallow: /admin/
 Disallow: /staff

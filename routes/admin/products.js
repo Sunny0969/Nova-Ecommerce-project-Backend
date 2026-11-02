@@ -20,6 +20,7 @@ const {
 } = require('../../lib/productQueries');
 const { invalidateCatalogCache } = require('../../lib/invalidatePublicCache');
 const { computeAdjustedValue, normalizeAdjustment } = require('../../lib/bulkProductAdjust');
+const { syncCategoryVisibility } = require('../../lib/syncCategoryVisibility');
 
 const router = express.Router();
 
@@ -371,6 +372,7 @@ router.post('/:id/approve', requireMountedAdmin, async (req, res) => {
 
     ok(res, updated);
     invalidateCatalogCache();
+    syncCategoryVisibility(Category, Product).catch((err) => console.error('[syncCategoryVisibility]', err));
   } catch (e) {
     console.error('Admin approve product:', e);
     fail(res, 500, e.message || 'Failed to approve product');
@@ -655,6 +657,7 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
         { $set: { isPublished: true } }
       );
       invalidateCatalogCache();
+      syncCategoryVisibility(Category, Product).catch((err) => console.error('[syncCategoryVisibility]', err));
       return ok(res, { modified: r.modifiedCount });
     }
 
@@ -664,6 +667,7 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
         { $set: { isPublished: false } }
       );
       invalidateCatalogCache();
+      syncCategoryVisibility(Category, Product).catch((err) => console.error('[syncCategoryVisibility]', err));
       return ok(res, { modified: r.modifiedCount });
     }
 
@@ -673,6 +677,7 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
         { $set: { isPublished: false } }
       );
       invalidateCatalogCache();
+      syncCategoryVisibility(Category, Product).catch((err) => console.error('[syncCategoryVisibility]', err));
       return ok(res, { modified: r.modifiedCount, soft: true });
     }
 
@@ -691,6 +696,7 @@ router.post('/bulk', requireMountedAdmin, async (req, res) => {
         await Product.deleteOne({ _id: product._id });
       }
       invalidateCatalogCache();
+      syncCategoryVisibility(Category, Product).catch((err) => console.error('[syncCategoryVisibility]', err));
       return ok(res, { deleted: docs.length, hard: true });
     }
 

@@ -20,7 +20,8 @@ const { syncCategoryVisibility } = require('../lib/syncCategoryVisibility');
 configureMongoDns();
 
 const SOURCE =
-  (process.env.SYNC_SOURCE_URL || 'https://nova-ecommerce-project-backend-production.up.railway.app')
+  (process.env.SYNC_SOURCE_URL || 'https://nova-ecommerce-project-backend.onrender.com')
+    // Railway (old): 'https://nova-ecommerce-project-backend-production.up.railway.app'
     .replace(/\/$/, '')
     .replace(/\/api$/, '');
 

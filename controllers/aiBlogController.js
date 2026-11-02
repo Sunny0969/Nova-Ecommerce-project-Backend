@@ -42,8 +42,8 @@ function buildSeoPrompt() {
   const now = new Date();
   const monthYear = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
 
-  return `Identify a hot grocery, cooking, or lifestyle trend in Pakistan for ${monthYear} and generate a fully audited blog draft for "${siteName}" (${origin}).
-
+  return `Identify a hot grocery, cooking, or lifestyle trend in Hyderabad, Pakistan for ${monthYear} and generate a fully audited Local SEO blog draft for "${siteName}" (${origin}). Focus heavily on the local Hyderabad market.
+  
 You MUST strictly follow this Content Audit Checklist:
 
 1. KEYWORD & NLP RULES:
@@ -52,22 +52,22 @@ You MUST strictly follow this Content Audit Checklist:
 - First paragraph must include 2-3 lines of solution-based sentences.
 - Optimize for high Google NLP Score (0.7 - 0.9) by keeping transactional/informational intent laser-focused on home shopping.
 
-2. STRUCTURE & HEADINGS RULES:
+2. STRUCTURE, READER FIRST & INTENT RULES:
 - Output format MUST be strictly HTML inside the JSON "content" string.
-- Do NOT include <h1> in "content" — the page H1 comes from "title" only.
-- Use 6 to 8 substantial <h2> sections for the main article body (Overview, comparisons, tips, etc.).
-- Include exactly ONE <h2>Conclusion</h2> section near the end (before FAQs).
-- Include exactly ONE <h2>Frequently Asked Questions</h2> section as the FINAL section in "content" — never place FAQs in the middle.
-- Do NOT repeat the conclusion. Do NOT add a second FAQ block.
-- Use <h3> only for sub-explanations and FAQ questions. Paragraphs must be short: 2 to 4 lines max using simple, professional English (active voice).
+- Clean Structure: Use 6 to 8 substantial <h2> sections. Do NOT include <h1> in "content".
+- Answer First, Explain Second: Begin each section with a direct, concise answer. Do not bury the answer. 
+- Full Coverage: Answer follow-up questions commonly found on Google or Reddit. Do not just discuss the headline.
+- Keep sentences short and entirely avoid fluff ("faltu bat nhn krain"). Do not use useless stats or placeholder screenshots.
+- Algorithm Friendly AND Reader First: Ensure the intent remains consistent across the whole page.
 
-3. TABLES & BULLET POINTS:
-- Include exactly one structural HTML <table> comparing grocery options or budget vs premium tier choices to support the business angle.
-- Use bullet points (<ul> and <li>) naturally for quick takeaways — each list item should be a complete thought.
+3. SCANNABILITY, TABLES & REAL SOURCES:
+- Scannable Structure: Use numbered lists, and bullet points rather than long text blocks.
+- Comparison Table: Include exactly one structural HTML <table> comparing options, with proper working external links to authoritative real sources directly inside the table.
+- High Information Gain: Add specific localized data, benchmarks, step-by-step guides, or specific Pakistan brand examples that AI models cannot synthesize generically from other sites.
 
 4. LENGTH (CRITICAL):
 - The "content" HTML body MUST contain at least ${MIN_BLOG_WORDS} words of readable text (excluding HTML tags).
-- Write long-form, in-depth sections with practical examples, household scenarios, and Pakistan-specific context.
+- Write long-form, in-depth sections with practical examples, household scenarios, and Hyderabad-specific context.
 - Each section should have multiple <p> paragraphs (not one-liners). FAQs alone should not carry most of the word count.
 
 5. FACTUAL & ECOMMERCE PROTECTION RULES:
@@ -75,7 +75,7 @@ You MUST strictly follow this Content Audit Checklist:
 - Avoid clickbait promises like "cheap", "best", "guaranteed". Content must feel safe, informative, and expert-written.
 - Focus on convenience, delivery speed, and time-saving aspects of ordering online.
 - Include at least four internal links with site-relative URLs (e.g. href="/shop", href="/blog", href="/brands", and href="/shop?category=..." or a category path matching the topic).
-- Include at least four external https links to authoritative sources (WHO, FAO, Google Search Central, PBS Pakistan, etc.) with target="_blank" rel="noopener noreferrer". Never use broken, placeholder, or javascript: links.
+- Include at least four external https links to authoritative real sources (WHO, FAO, Google Search Central, PBS Pakistan, etc.) with target="_blank" rel="noopener noreferrer". Never use broken, placeholder, or javascript: links.
 
 The response must be strictly a valid, raw JSON object without markdown formatting blocks (NO \`\`\`json wrappers), containing exactly these keys:
 {

@@ -44,6 +44,7 @@ const { getOrSet, CACHE_KEYS } = require('../lib/apiCache');
 const { setPublicApiCacheHeaders } = require('../lib/publicApiCacheHeaders');
 const { invalidateCatalogCache } = require('../lib/invalidatePublicCache');
 const { activeCategoryProductFilter } = require('../lib/activeCategories');
+const { syncCategoryVisibility } = require('../lib/syncCategoryVisibility');
 const ProductSubcategory = require('../models/ProductSubcategory');
 const { recordAuditLog } = require('../lib/auditLogger');
 const {
@@ -1095,6 +1096,7 @@ router.post(
 
       ok(res, shapeProductDoc(populated), 201, { message: 'Product created' });
       invalidateCatalogCache();
+      syncCategoryVisibility(Category, Product).catch((err) => console.error('[syncCategoryVisibility]', err));
 
       // async embedding generation (never block response)
       try {
@@ -1182,6 +1184,7 @@ router.patch('/:id/stock', requireAdmin, async (req, res) => {
       .lean();
     ok(res, shapeProductDoc(updated), 200, { message: 'Stock updated' });
     invalidateCatalogCache();
+    syncCategoryVisibility(Category, Product).catch((err) => console.error('[syncCategoryVisibility]', err));
   } catch (error) {
     if (error.name === 'ValidationError') {
       return fail(res, 400, 'Validation failed', formatMongooseValidation(error));
@@ -1536,6 +1539,7 @@ router.put(
         .lean();
       ok(res, shapeProductDoc(updated), 200, { message: 'Product updated' });
       invalidateCatalogCache();
+      syncCategoryVisibility(Category, Product).catch((err) => console.error('[syncCategoryVisibility]', err));
 
       // async embedding refresh (never block response)
       try {
@@ -1820,6 +1824,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
       product.isPublished = false;
       await product.save();
       invalidateCatalogCache();
+      syncCategoryVisibility(Category, Product).catch((err) => console.error('[syncCategoryVisibility]', err));
       return res.status(200).json({
         success: true,
         message: 'Product unpublished (soft delete)',
@@ -1831,6 +1836,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     await deleteProductImagesFromCloudinary(product.images || []);
     await Product.deleteOne({ _id: product._id });
     invalidateCatalogCache();
+    syncCategoryVisibility(Category, Product).catch((err) => console.error('[syncCategoryVisibility]', err));
 
     res.status(200).json({
       success: true,
